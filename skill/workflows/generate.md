@@ -18,7 +18,7 @@
 
 本工作流每一步都是「引擎构造 prompt → LLM 执行 → 引擎解析」。**执行 prompt 的 LLM 必须是子代理，不是你（主编排上下文）。** 违反此原则，几份大资料 + 一次整档生成就能撑爆上下文。规则：
 
-1. **主 Agent 绝不亲自执行引擎输出的 prompt**——用 Task 工具起子代理（权限仅 Read/Write）。
+1. **主 Agent 绝不亲自执行引擎输出的 prompt**——用 Task 工具起子代理（权限给 Read/Write/Bash）。
 2. **prompt 用 `--out` 落盘到 `prompts/`**；子代理把响应写入 `responses/`；主 Agent 只对响应文件 `--parse` 并读**状态**。解析产物大的命令（`input register`、`gen extract`、`gen generate`）一律加 `-O <file>` 落盘。
 3. **主 Agent 绝不读取 prompt 文件、响应文件、输入资产原文的正文内容。**
 
@@ -27,9 +27,12 @@
 ```bash
 $PAPER_DERIVED_BIN <cmd> <args> --out prompts/<key>.md       # ① 落盘 prompt（文本格式）
 # ② 起子代理：读 prompts/<key>.md（==== SYSTEM ==== 之后是系统指令，==== USER ==== 之后是任务），
-#    严格按其要求生成，把完整响应原样写入 responses/<key>.json，只回 DONE <key>，不输出正文到对话
+#    严格按其要求生成，把完整响应写入 responses/<key>.json（遵守 SKILL.md「响应写盘纪律」：
+#    已存在先 rm -f；超长响应先 Write 首段再 Bash 逐段追加），只回 DONE <key>，不输出正文到对话
 $PAPER_DERIVED_BIN <cmd> <args> --parse responses/<key>.json # ③ 主 Agent 只看返回状态
 ```
+
+> 尤其注意 `gen generate` 全量模式：整档 DocumentTree 响应极易超过子代理单条回复的输出上限，一次 Write 必被截断（`InputValidationError: content missing`）。要么让子代理分段追加写入，要么直接改用下方「分批生成」把单次响应做小——**大模板优先选分批**。
 
 准备工作目录：`mkdir -p prompts responses`
 
