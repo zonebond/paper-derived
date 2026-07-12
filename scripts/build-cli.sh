@@ -1,7 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION=$(uv run python -c "import importlib.metadata; print(importlib.metadata.version('paper-derived'))" 2>/dev/null || echo "0.1.0")
+VERSION=$(uv run python -c "import importlib.metadata; print(importlib.metadata.version('paper-derived'))" 2>/dev/null || echo "0.2.0")
+
+# ── 烙入构建信息（_buildinfo.py 不入库，见 .gitignore）─────────
+BUILD_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+BUILD_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+cat > cli/paper_derived/_buildinfo.py <<EOF
+# 构建期生成，勿手改、勿入库
+BUILD_COMMIT = "${BUILD_COMMIT}"
+BUILD_DATE = "${BUILD_DATE}"
+EOF
+echo "Build info: ${BUILD_COMMIT} @ ${BUILD_DATE}"
 
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 ARCH="$(uname -m)"

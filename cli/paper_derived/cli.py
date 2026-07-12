@@ -17,7 +17,11 @@ import click
 from paper_derived.format_reader import read_file as _read_input_file
 
 
+from paper_derived import __version__
+
+
 @click.group()
+@click.version_option(version=__version__, prog_name="paper-derived")
 def main():
     """paper-derived — 文档生成引擎 (Agent 驱动).
 
@@ -26,6 +30,18 @@ def main():
     2. 用自己的 LLM 执行
     3. 将 LLM 响应传给 paper-derived 解析
     """
+
+
+@main.command("version")
+def version_cmd():
+    """输出完整版本信息（版本号、构建 commit、构建时间、能力清单）。"""
+    from paper_derived import get_version_info
+    from paper_derived.engine._paths import PROMPTS_DIR
+
+    info = get_version_info()
+    info["compact_prompts"] = (PROMPTS_DIR / "compact").is_dir()
+    info["capabilities"] = ["out-text-prompt", "parse-output-file", "session-run", "llm-exec", "compact-prompts"]
+    click.echo(json.dumps(info, ensure_ascii=False))
 
 
 # ── Output helpers ─────────────────────────────────────────────

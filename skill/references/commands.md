@@ -17,6 +17,17 @@ paper-derived <command> <args>                        # 构造 prompt → 全量
 
 解析产物较大的命令（`input register`、`gen extract`、`gen generate`、`gen outline`、`revise *`、`session assemble`）支持 `-O <file>` 把结果写入文件，stdout 只回状态摘要。
 
+## 版本
+
+```bash
+paper-derived --version    # 一行版本号
+paper-derived version      # JSON：版本 + 构建 commit/时间 + 能力清单
+```
+
+`version` 输出示例：`{"version":"0.2.0","commit":"06100d1","built_at":"...","capabilities":[...]}`。
+Skill 自身版本见 SKILL.md 顶部版本行（install.sh 安装时盖 commit + 日期戳）；
+两边版本号不一致 → 二进制与 skill 文档不同步，重新运行 install.sh。
+
 ## 模板命令
 
 ### `paper-derived template register`

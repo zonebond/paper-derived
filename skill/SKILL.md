@@ -1,9 +1,13 @@
 ---
 name: paper-derived
-description: 从样例模板和输入资料派生结构化开发文档。支持模板注册、文档生成/修改、Session-Driven 大文档生成。当用户请求生成设计文档、整理资料为格式文档、注册模板或修改文档章节时使用。
+description: 从样例模板和输入资料派生结构化开发文档。支持模板注册、文档生成/修改、Session-Driven 大文档生成、离线直驱模式。当用户请求生成设计文档、整理资料为格式文档、注册模板或修改文档章节时使用。
+version: 0.2.0
 ---
 
 # Paper Derived
+
+> **Skill 版本：v0.2.0** <!-- BUILD_INFO -->
+> 本会话首次触发本 skill 时，向用户报告一行版本信息：上面的 skill 版本 + `$PAPER_DERIVED_BIN version` 的输出（含 CLI 版本与构建 commit）。两者版本号不一致说明二进制与 skill 文档不同步，提示用户重新运行 install.sh。
 
 从样例模板和输入资料派生结构化开发文档。
 
