@@ -4,7 +4,7 @@
 a = Analysis(
     ['cli/paper_derived/cli.py'],
     pathex=[],
-    binaries=[('/Users/zonebondx/workspace/code.research/c-checkers/paper-derived/.venv/lib/python3.10/site-packages/pypandoc/files/pandoc', '.')],
+    binaries=[('/Users/zonebondx/Downloads/paper-derived/.venv/lib/python3.10/site-packages/pypandoc/files/pandoc', '.')],
     datas=[('cli/paper_derived/prompts', 'paper_derived/prompts')],
     hiddenimports=['pypandoc', 'docx', 'openpyxl', 'pypdf', 'xlrd', 'pptx', 'fpdf'],
     hookspath=[],
