@@ -35,13 +35,17 @@ $PAPER_DERIVED_BIN session prompt -s $SID --section <id> --out prompts/<id>.md
 
 > prompt 文件是纯文本（`==== SYSTEM ====` / `==== USER ====` 两段，真实换行），子代理 Read 可完整读取，不存在 JSON 单行超长被截断的问题。
 
-**② 用 Task 工具起子代理执行**（工具权限仅需 Read/Write）。交给它的指令：
+**② 用 Task 工具起子代理执行**（工具权限给 Read/Write/Bash）。交给它的指令：
 
 ```
 读取 prompts/<id>.md：`==== SYSTEM ====` 之后是你的系统指令，`==== USER ====` 之后是任务。
 文件较大时分段 Read（offset/limit），务必读完整。
 严格按二者要求生成本 Section 内容——输出的目标格式已在 prompt 内部定义。
-把你的完整响应原样写入 responses/<id>.json。
+把完整响应写入 responses/<id>.json，遵守写盘纪律：
+- 该文件已存在时先 rm -f 再写（Write 不能覆盖未读过的已有文件）；
+- 响应超过约 1 万字时禁止一次 Write 全文——先 Write 首段建立文件，
+  剩余部分用 Bash 逐段追加：cat >> responses/<id>.json <<'PD_EOF' ... PD_EOF；
+- 写完用 wc -c 或读尾部确认完整。
 完成后只回复一行：DONE <id>
 不要把正文输出到对话里。
 ```
@@ -211,6 +215,8 @@ $PAPER_DERIVED_BIN session search -s $SID "认证方案" [--focus rule:jwt-auth]
 
 | 条件 | 主 Agent 行为 |
 |------|-----------|
+| 子代理反复报 `InputValidationError`（Write 缺 file_path/content） | 响应超长、单次 Write 被截断。`rm -f` 残留的半截响应文件，重派子代理并在指令中强调「分段写入」纪律（见②） |
+| 子代理报 `File has not been read yet` | 目标响应文件是上次残留。指示子代理先 `rm -f` 再写 |
 | 子代理回的响应 `--parse` 失败（格式不对），attempt < 3 | 重派子代理执行同一 prompt（重试全程在子代理内） |
 | Section 生成 failed，attempt ≥ 3 | 告知用户，建议补充输入或跳过 |
 | `session next` 返回 `feed_more` | 告知用户缺什么，补充后 `session feed` |
