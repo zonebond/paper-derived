@@ -1,0 +1,739 @@
+"""Paper Derived CLI — 引擎 prompt 构造入口.
+
+CLI 只做两件事:
+1. 构造 prompt: 读输入 → 调 build_xxx_prompt() → 输出 (system + user) 给 Agent
+2. 解析结果: 读 LLM 响应 → 调 parse_xxx_result() → 输出数据模型
+
+支持格式: .docx, .doc, .xlsx, .xls, .pdf, .pptx, .csv, .tsv, .md, .txt, .json
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import click
+
+from paper_derived.format_reader import read_file as _read_input_file
+
+
+@click.group()
+def main():
+    """paper-derived — 文档生成引擎 (Agent 驱动).
+
+    引擎不调 LLM。由 Agent (Claude Code / OpenCode / Pi) 负责:
+    1. 调 paper-derived 命令获取 prompt
+    2. 用自己的 LLM 执行
+    3. 将 LLM 响应传给 paper-derived 解析
+    """
+
+
+# ── Output helpers ─────────────────────────────────────────────
+
+
+def _output_prompt(system_prompt: str, user_message: str, prompt_file: str | None = None) -> None:
+    """输出 prompt 供 Agent 消费.
+
+    当 prompt_file 指定时，将 prompt JSON 写入文件，stdout 仅输出紧凑摘要。
+    不指定时行为不变（向后兼容）。
+    """
+    prompt_data = {
+        "system": system_prompt,
+        "user": user_message,
+    }
+
+    if prompt_file:
+        Path(prompt_file).write_text(
+            json.dumps(prompt_data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        summary = {
+            "status": "prompt_written",
+            "prompt_file": str(prompt_file),
+        }
+        try:
+            from paper_derived.engine._tokens import count_tokens
+            summary["prompt_tokens"] = count_tokens(system_prompt) + count_tokens(user_message)
+        except Exception:
+            summary["prompt_chars"] = len(system_prompt) + len(user_message)
+        click.echo(json.dumps(summary, ensure_ascii=False))
+    else:
+        click.echo(json.dumps(prompt_data, ensure_ascii=False, indent=2))
+
+
+def _output_json(obj) -> None:
+    """输出 JSON 结果."""
+    if hasattr(obj, "to_dict"):
+        obj = obj.to_dict()
+    click.echo(json.dumps(obj, ensure_ascii=False, indent=2))
+
+
+# ── Template commands ──────────────────────────────────────────
+
+
+@main.group()
+def template():
+    """模板管理."""
+
+
+@template.command("register")
+@click.argument("sample", type=click.Path(exists=True))
+@click.option("--name", "-n", required=True, help="模板名称 (kebab-case)")
+@click.option("--description", "-d", default="", help="模板描述")
+@click.option("--parse", "-p", default=None, type=click.Path(exists=True),
+              help="解析 LLM 响应文件 (而非输出 prompt)")
+@click.option("--prompt-file", default=None, type=click.Path(),
+              help="将 prompt JSON 写入文件而非 stdout (推荐配合子代理委托)")
+def template_register(sample, name, description, parse, prompt_file):
+    """注册模板: 输出分析 prompt，或解析 LLM 响应."""
+    from paper_derived.engine.template import (
+        build_register_template_prompt,
+        parse_register_template_result,
+        _to_kebab_case,
+    )
+    from paper_derived.llm import extract_json
+    from paper_derived.storage import find_template_by_name, template_exists
+
+    # 精确同名检查：同名模板已存在时报错拦截
+    existing = find_template_by_name(name)
+    if existing:
+        click.echo(json.dumps({
+            "error": "template_name_exists",
+            "message": f"模板「{name}」已存在（id: {existing.id}）",
+            "existing_id": existing.id,
+        }, ensure_ascii=False))
+        raise SystemExit(1)
+
+    if parse:
+        llm_response = Path(parse).read_text(encoding="utf-8")
+
+        # id 冲突检查：LLM 可能生成与已有模板相同的 id
+        parsed = extract_json(llm_response)
+        resolved_id = _to_kebab_case(parsed.get("id", name))
+        if template_exists(resolved_id):
+            existing_name = ""
+            existing_tpl = find_template_by_name(name)  # 已在上面检查过，这里不会命中
+            from paper_derived.storage import load_template
+            existing_tpl = load_template(resolved_id)
+            existing_name = existing_tpl.name if existing_tpl else ""
+            click.echo(json.dumps({
+                "error": "template_id_exists",
+                "message": f"模板 id「{resolved_id}」已存在（名称: {existing_name}）",
+                "existing_id": resolved_id,
+                "existing_name": existing_name,
+            }, ensure_ascii=False))
+            raise SystemExit(1)
+
+        result = parse_register_template_result(llm_response, name, description)
+        _output_json(result)
+    else:
+        sample_text, _, _ = _read_input_file(sample)
+        sys_prompt, user_msg = build_register_template_prompt(sample_text, name, description)
+        _output_prompt(sys_prompt, user_msg, prompt_file=prompt_file)
+
+
+@template.command("list")
+@click.option("--json", "as_json", is_flag=True, help="输出 JSON 格式（含 section_ids）")
+def template_list(as_json):
+    """列出所有模板."""
+    from paper_derived.engine.template import list_all
+    templates = list_all()
+    if not templates:
+        click.echo("(暂无已注册模板)")
+        return
+    if as_json:
+        click.echo(json.dumps(templates, ensure_ascii=False, indent=2))
+        return
+    click.echo(f"{'ID':<24} {'名称':<20} 描述")
+    click.echo("-" * 64)
+    for t in templates:
+        click.echo(f"{t['id']:<24} {t['name']:<20} {t.get('description', '')}")
+
+
+@template.command("show")
+@click.argument("template_id")
+def template_show(template_id):
+    """查看模板详情."""
+    from paper_derived.engine.template import get_template
+    result = get_template(template_id)
+    if result is None:
+        click.echo(f"模板 '{template_id}' 不存在")
+        raise SystemExit(1)
+    _output_json(result)
+
+
+@template.command("delete")
+@click.argument("template_id")
+def template_delete(template_id):
+    """删除模板."""
+    from paper_derived.storage import template_exists, delete_template
+
+    if not template_exists(template_id):
+        click.echo(f"模板 '{template_id}' 不存在")
+        raise SystemExit(1)
+    delete_template(template_id)
+    click.echo(f"模板 '{template_id}' 已删除")
+
+
+# ── Input commands ─────────────────────────────────────────────
+
+
+@main.group()
+def input():
+    """输入资产管理."""
+
+
+@input.command("register")
+@click.argument("file", type=click.Path(exists=True))
+@click.option("--name", "-n", default=None, help="资产名称")
+@click.option("--parse", "-p", default=None, type=click.Path(exists=True),
+              help="解析 LLM 响应文件")
+@click.option("--chunk-size", default=0, type=int,
+              help="分块大小(字符数)。0=不分块。大于0时输出分块 prompts。")
+@click.option("--parse-chunks", multiple=True, type=click.Path(exists=True),
+              help="解析分块 LLM 响应文件(可多次指定)。合并为单个 InputAsset。")
+@click.option("--slim/--no-slim", default=True,
+              help="精简模式：不存储 raw_content，仅保留摘要和实体。（默认开启，大文档推荐）")
+@click.option("--prompt-file", default=None, type=click.Path(),
+              help="将 prompt JSON 写入文件而非 stdout (推荐配合子代理委托)")
+def input_register(file, name, parse, chunk_size, parse_chunks, slim, prompt_file):
+    """注册输入资产: 输出分析 prompt，或解析 LLM 响应.
+
+    大文档自动分块：用 --chunk-size 指定每块最大字符数（建议 30000），
+    输出多个 prompt 供逐块处理，再用 --parse-chunks 合并结果。
+
+    默认 --slim：不存储 raw_content，仅保留摘要和实体列表，
+    避免输出 JSON 过大。下游命令会基于实体列表而非原文生成。
+    使用 --no-slim 保留 raw_content（大文档不推荐）。
+    """
+    from paper_derived.engine.input_asset import (
+        build_register_input_prompt,
+        build_register_input_chunk_prompt,
+        parse_register_input_result,
+        merge_input_assets,
+    )
+    from paper_derived.format_reader import chunk_text, DEFAULT_CHUNK_SIZE
+
+    raw, fmt_type, metadata = _read_input_file(file)
+    asset_name = name or Path(file).stem
+
+    # 解析分块结果并合并
+    if parse_chunks:
+        partial_assets = []
+        for resp_path in parse_chunks:
+            llm_response = Path(resp_path).read_text(encoding="utf-8")
+            partial = parse_register_input_result(llm_response, "", asset_name, source=file, slim=slim)
+            partial_assets.append(partial)
+        result = merge_input_assets(partial_assets, raw if not slim else "", asset_name, source=file, slim=slim)
+        _output_json(result)
+        return
+
+    # 解析单块结果
+    if parse:
+        llm_response = Path(parse).read_text(encoding="utf-8")
+        result = parse_register_input_result(llm_response, raw if not slim else "", asset_name, source=file, slim=slim)
+        _output_json(result)
+        return
+
+    # 构造 prompt（分块 or 整体）
+    effective_chunk_size = chunk_size if chunk_size > 0 else DEFAULT_CHUNK_SIZE
+    chunks = chunk_text(raw, max_chars=effective_chunk_size)
+
+    if len(chunks) == 1:
+        # 文档不大，输出单个 prompt
+        sys_prompt, user_msg = build_register_input_prompt(raw, asset_name)
+        _output_prompt(sys_prompt, user_msg, prompt_file=prompt_file)
+    else:
+        # 大文档，输出分块 prompt
+        from paper_derived.engine._tokens import count_tokens
+
+        if prompt_file:
+            # --prompt-file 模式：每块写入独立文件
+            chunk_files = []
+            total_tokens = 0
+            for i, chunk in enumerate(chunks):
+                sys_prompt, user_msg = build_register_input_chunk_prompt(
+                    chunk, asset_name, chunk_index=i, total_chunks=len(chunks)
+                )
+                chunk_file = f"{prompt_file}.chunk-{i}.json"
+                Path(chunk_file).write_text(json.dumps({
+                    "system": sys_prompt,
+                    "user": user_msg,
+                }, ensure_ascii=False, indent=2), encoding="utf-8")
+                chunk_tokens = count_tokens(sys_prompt) + count_tokens(user_msg)
+                total_tokens += chunk_tokens
+                chunk_files.append(chunk_file)
+            click.echo(json.dumps({
+                "status": "prompts_written",
+                "mode": "chunked",
+                "total_chunks": len(chunks),
+                "prompt_files": chunk_files,
+                "total_prompt_tokens": total_tokens,
+            }, ensure_ascii=False))
+        else:
+            # 原有行为：全部输出到 stdout
+            chunk_prompts = []
+            for i, chunk in enumerate(chunks):
+                sys_prompt, user_msg = build_register_input_chunk_prompt(
+                    chunk, asset_name, chunk_index=i, total_chunks=len(chunks)
+                )
+                chunk_prompts.append({
+                    "index": i,
+                    "system": sys_prompt,
+                    "user": user_msg,
+                })
+            click.echo(json.dumps({
+                "mode": "chunked",
+                "total_chunks": len(chunks),
+                "chunk_size": effective_chunk_size,
+                "chunks": chunk_prompts,
+            }, ensure_ascii=False, indent=2))
+
+
+# ── Generate commands ──────────────────────────────────────────
+
+
+@main.group()
+def gen():
+    """文档生成：资料体检 → 实体抽取 → 文档生成."""
+
+
+def _load_input_assets(file_paths: list[str]) -> list:
+    """加载已注册的 InputAsset JSON 文件.
+
+    只接受 .json（由 `input register` 产出）。不接受原始文件——原始文件必须先注册。
+    """
+    from paper_derived.models.input_asset import InputAsset
+
+    assets = []
+    for fp in file_paths:
+        p = Path(fp)
+        if p.suffix != ".json":
+            raise click.UsageError(
+                f"不接受原始文件 '{fp}'。请先注册输入资产:\n"
+                f"  paper-derived input register '{fp}' -n <资产名称>\n"
+                f"然后使用注册后产出的 .json 文件作为 -i 参数。"
+            )
+        data = json.loads(p.read_text(encoding="utf-8"))
+        assets.append(InputAsset.from_dict(data))
+    return assets
+
+
+@gen.command("preflight")
+@click.option("--inputs", "-i", required=True, multiple=True, type=click.Path(exists=True))
+@click.option("--template", "-t", required=True, help="模板 ID")
+@click.option("--parse", "-p", default=None, type=click.Path(exists=True),
+              help="解析 LLM 响应文件")
+@click.option("--prompt-file", default=None, type=click.Path(),
+              help="将 prompt JSON 写入文件而非 stdout")
+def gen_preflight(inputs, template, parse, prompt_file):
+    """资料体检."""
+    from paper_derived.engine.generator import build_preflight_prompt, parse_preflight_result
+
+    assets = _load_input_assets(list(inputs))
+
+    if parse:
+        result = parse_preflight_result(Path(parse).read_text(encoding="utf-8"))
+        _output_json(result)
+    else:
+        sys_prompt, user_msg = build_preflight_prompt(assets, template)
+        _output_prompt(sys_prompt, user_msg, prompt_file=prompt_file)
+
+
+@gen.command("extract")
+@click.option("--inputs", "-i", required=True, multiple=True, type=click.Path(exists=True))
+@click.option("--template", "-t", required=True, help="模板 ID")
+@click.option("--parse", "-p", default=None, type=click.Path(exists=True),
+              help="解析 LLM 响应文件")
+@click.option("--prompt-file", default=None, type=click.Path(),
+              help="将 prompt JSON 写入文件而非 stdout")
+def gen_extract(inputs, template, parse, prompt_file):
+    """实体抽取."""
+    from paper_derived.engine.generator import build_extract_prompt, parse_extract_result
+
+    assets = _load_input_assets(list(inputs))
+
+    if parse:
+        result = parse_extract_result(Path(parse).read_text(encoding="utf-8"))
+        _output_json(result)
+    else:
+        sys_prompt, user_msg = build_extract_prompt(assets, template)
+        _output_prompt(sys_prompt, user_msg, prompt_file=prompt_file)
+
+
+@gen.command("outline")
+@click.option("--template", "-t", required=True, help="模板 ID")
+@click.option("--output", "-O", default=None, help="输出文件路径")
+@click.option("--format", "-f", "output_format", default=None,
+              help="输出格式: json|md|docx|pdf（默认从 --output 扩展名推断）")
+@click.option("--parse", "-p", default=None, type=click.Path(exists=True),
+              help="解析 LLM 响应文件")
+@click.option("--prompt-file", default=None, type=click.Path(),
+              help="将 prompt JSON 写入文件而非 stdout")
+def gen_outline(template, output, output_format, parse, prompt_file):
+    """生成文档大纲（骨架）。"""
+    from paper_derived.engine.generator import build_outline_prompt, parse_outline_result
+    from paper_derived.format_writer import write_document
+
+    if parse:
+        result = parse_outline_result(Path(parse).read_text(encoding="utf-8"), template)
+        if output:
+            out_path = write_document(result, output, fmt=output_format)
+            click.echo(f"已输出大纲 → {out_path}")
+        else:
+            _output_json(result)
+    else:
+        sys_prompt, user_msg = build_outline_prompt(template)
+        _output_prompt(sys_prompt, user_msg, prompt_file=prompt_file)
+
+
+@gen.command("generate")
+@click.option("--inputs", "-i", required=True, multiple=True, type=click.Path(exists=True))
+@click.option("--template", "-t", required=True, help="模板 ID")
+@click.option("--overrides", "-o", default=None, type=click.Path(exists=True))
+@click.option("--sections", "-s", default=None, help="逗号分隔的 Section ID 列表（分批生成时指定）")
+@click.option("--extract", "-e", default=None, type=click.Path(exists=True),
+              help="抽取结果 JSON（分批生成时用于筛选实体）")
+@click.option("--into", default=None, type=click.Path(exists=True),
+              help="已有文档树路径（分批生成时合并到该文档）")
+@click.option("--output", "-O", default=None, help="输出文件路径")
+@click.option("--format", "-f", "output_format", default=None,
+              help="输出格式: json|md|docx|pdf（默认从 --output 扩展名推断）")
+@click.option("--parse", "-p", default=None, type=click.Path(exists=True),
+              help="解析 LLM 响应文件")
+@click.option("--prompt-file", default=None, type=click.Path(),
+              help="将 prompt JSON 写入文件而非 stdout")
+def gen_generate(inputs, template, overrides, sections, extract, into, output, output_format, parse, prompt_file):
+    """生成文档树。支持全量或分批生成。"""
+    from paper_derived.engine.generator import (
+        build_generate_prompt, parse_generate_result,
+        build_batch_generate_prompt, parse_batch_generate_result,
+    )
+    from paper_derived.format_writer import write_document
+    from paper_derived.models.extraction import ExtractionResult
+
+    assets = _load_input_assets(list(inputs))
+    extraction_overrides = None
+    if overrides:
+        extraction_overrides = json.loads(Path(overrides).read_text(encoding="utf-8"))
+
+    # 分批生成模式
+    if sections:
+        section_ids = [s.strip() for s in sections.split(",") if s.strip()]
+        extraction_result = None
+        if extract:
+            extraction_data = json.loads(Path(extract).read_text(encoding="utf-8"))
+            extraction_result = ExtractionResult.from_dict(extraction_data)
+
+        existing_doc = None
+        if into:
+            doc_data = json.loads(Path(into).read_text(encoding="utf-8"))
+            from paper_derived.models.document import DocumentTree
+            existing_doc = DocumentTree.from_dict(doc_data)
+
+        if parse:
+            result = parse_batch_generate_result(
+                Path(parse).read_text(encoding="utf-8"), template, assets
+            )
+            if existing_doc:
+                merged_count = existing_doc.merge_batch(result)
+                result = existing_doc
+                click.echo(f"批量合并: 更新了 {merged_count} 个 section", err=True)
+            if output:
+                out_path = write_document(result, output, fmt=output_format)
+                click.echo(f"已输出 → {out_path}")
+            else:
+                _output_json(result)
+        else:
+            sys_prompt, user_msg = build_batch_generate_prompt(
+                assets, template, section_ids, extraction_result, existing_doc,
+            )
+            _output_prompt(sys_prompt, user_msg, prompt_file=prompt_file)
+        return
+
+    # 全量生成模式（原有逻辑）
+    if parse:
+        result = parse_generate_result(
+            Path(parse).read_text(encoding="utf-8"), template, assets
+        )
+        if output:
+            out_path = write_document(result, output, fmt=output_format)
+            click.echo(f"已输出 → {out_path}")
+        else:
+            _output_json(result)
+    else:
+        sys_prompt, user_msg = build_generate_prompt(assets, template, extraction_overrides)
+        _output_prompt(sys_prompt, user_msg, prompt_file=prompt_file)
+
+
+@gen.command("validate")
+@click.argument("doc", type=click.Path(exists=True))
+@click.option("--template", "-t", required=True, help="模板 ID")
+@click.option("--parse", "-p", default=None, type=click.Path(exists=True),
+              help="解析 LLM 响应文件")
+@click.option("--prompt-file", default=None, type=click.Path(),
+              help="将 prompt JSON 写入文件而非 stdout")
+def gen_validate(doc, template, parse, prompt_file):
+    """质检."""
+    from paper_derived.engine.validator import build_validate_prompt, parse_validate_result
+    from paper_derived.models.document import DocumentTree
+
+    doc_data = json.loads(Path(doc).read_text(encoding="utf-8"))
+    doc_tree = DocumentTree.from_dict(doc_data)
+
+    if parse:
+        result = parse_validate_result(Path(parse).read_text(encoding="utf-8"))
+        _output_json(result)
+    else:
+        sys_prompt, user_msg = build_validate_prompt(doc_tree, template)
+        _output_prompt(sys_prompt, user_msg, prompt_file=prompt_file)
+
+
+# ── Revise commands ────────────────────────────────────────────
+
+
+@main.group()
+def revise():
+    """文档修改：局部/全局改写."""
+
+
+@revise.command("section")
+@click.argument("doc", type=click.Path(exists=True))
+@click.argument("section_id")
+@click.argument("instruction")
+@click.option("--output", "-O", default=None, help="输出文件路径")
+@click.option("--format", "-f", "output_format", default=None,
+              help="输出格式: json|md|docx|pdf（默认从 --output 扩展名推断）")
+@click.option("--parse", "-p", default=None, type=click.Path(exists=True),
+              help="解析 LLM 响应文件")
+@click.option("--prompt-file", default=None, type=click.Path(),
+              help="将 prompt JSON 写入文件而非 stdout")
+def revise_section_cmd(doc, section_id, instruction, output, output_format, parse, prompt_file):
+    """局部修改."""
+    from paper_derived.engine.doc_ops import build_revise_section_prompt, parse_revise_result
+    from paper_derived.models.document import DocumentTree
+    from paper_derived.format_writer import write_document
+
+    doc_data = json.loads(Path(doc).read_text(encoding="utf-8"))
+    doc_tree = DocumentTree.from_dict(doc_data)
+
+    if parse:
+        result = parse_revise_result(Path(parse).read_text(encoding="utf-8"))
+        out_path = output or doc
+        write_document(result, out_path, fmt=output_format)
+        click.echo(f"已修改 section='{section_id}' → {out_path}")
+    else:
+        sys_prompt, user_msg = build_revise_section_prompt(doc_tree, section_id, instruction)
+        _output_prompt(sys_prompt, user_msg, prompt_file=prompt_file)
+
+
+@revise.command("global")
+@click.argument("doc", type=click.Path(exists=True))
+@click.argument("instruction")
+@click.option("--output", "-O", default=None, help="输出文件路径")
+@click.option("--format", "-f", "output_format", default=None,
+              help="输出格式: json|md|docx|pdf（默认从 --output 扩展名推断）")
+@click.option("--parse", "-p", default=None, type=click.Path(exists=True),
+              help="解析 LLM 响应文件")
+@click.option("--prompt-file", default=None, type=click.Path(),
+              help="将 prompt JSON 写入文件而非 stdout")
+def revise_global_cmd(doc, instruction, output, output_format, parse, prompt_file):
+    """全局改写."""
+    from paper_derived.engine.doc_ops import build_revise_global_prompt, parse_revise_result
+    from paper_derived.models.document import DocumentTree
+    from paper_derived.format_writer import write_document
+
+    doc_data = json.loads(Path(doc).read_text(encoding="utf-8"))
+    doc_tree = DocumentTree.from_dict(doc_data)
+
+    if parse:
+        result = parse_revise_result(Path(parse).read_text(encoding="utf-8"))
+        out_path = output or doc
+        write_document(result, out_path, fmt=output_format)
+        click.echo(f"已全局修改 → {out_path}")
+    else:
+        sys_prompt, user_msg = build_revise_global_prompt(doc_tree, instruction)
+        _output_prompt(sys_prompt, user_msg, prompt_file=prompt_file)
+
+
+# ── Session commands ────────────────────────────────────────────
+
+
+@main.group()
+def session():
+    """会话驱动生成 (Session-Driven Generation).
+
+    结构化任务迭代 + 全局状态，破解上下文爆炸与长任务失控。
+    CLI 内部维护 ContextStore，Agent 只发声明式命令。
+    """
+
+
+@session.command("init")
+@click.option("--template", "-t", required=True, help="模板 ID")
+@click.option("--budget", default=120_000, type=int, help="per-section token 预算")
+@click.option("--output", "-O", default="", help="最终输出文件路径")
+@click.option("--format", "-f", "output_format", default="", help="输出格式")
+def session_init_cmd(template, budget, output, output_format):
+    """初始化生成会话."""
+    from paper_derived.engine.session_engine import session_init
+
+    result = session_init(template, budget, output, output_format)
+    _output_json({
+        "session_id": result.session_id,
+        "template_id": result.template_id,
+        "phase": result.phase,
+        "total_sections": result.total_sections,
+        "section_ids": list(result.section_progress.keys()),
+    })
+
+
+@session.command("feed")
+@click.option("--session-id", "-s", required=True, help="Session ID")
+@click.option("--input", "-i", "inputs", required=True, multiple=True,
+              type=click.Path(exists=True), help="InputAsset JSON 文件")
+@click.option("--parse", "-p", default=None, type=click.Path(exists=True),
+              help="解析 LLM 响应文件")
+@click.option("--prompt-file", default=None, type=click.Path(),
+              help="将 prompt JSON 写入文件而非 stdout")
+def session_feed_cmd(session_id, inputs, parse, prompt_file):
+    """喂入输入资产，填充上下文库。Agent 只看到状态报告。"""
+    from paper_derived.engine.session_engine import build_feed_prompt, parse_feed_result
+
+    if parse:
+        result = parse_feed_result(Path(parse).read_text(encoding="utf-8"), session_id)
+        _output_json(result)
+    else:
+        from paper_derived.session_store import load_session
+        session_obj, _, _ = load_session(session_id)
+        input_assets = []
+        for fp in inputs:
+            data = json.loads(Path(fp).read_text(encoding="utf-8"))
+            input_assets.append(data)
+        sys_prompt, user_msg = build_feed_prompt(session_obj, input_assets)
+        _output_prompt(sys_prompt, user_msg, prompt_file=prompt_file)
+
+
+@session.command("next")
+@click.option("--session-id", "-s", required=True, help="Session ID")
+def session_next_cmd(session_id):
+    """查询下一步操作。无需 LLM。"""
+    from paper_derived.engine.session_engine import session_next
+
+    result = session_next(session_id)
+    _output_json(result)
+
+
+@session.command("prompt")
+@click.option("--session-id", "-s", required=True, help="Session ID")
+@click.option("--section", required=True, help="Section ID")
+@click.option("--parse", "-p", default=None, type=click.Path(exists=True),
+              help="解析 LLM 响应文件")
+@click.option("--prompt-file", default=None, type=click.Path(),
+              help="将 prompt JSON 写入文件而非 stdout")
+def session_prompt_cmd(session_id, section, parse, prompt_file):
+    """获取 Section 生成 prompt (CLI 自动组装上下文)。"""
+    from paper_derived.engine.session_engine import build_section_prompt, parse_section_result
+
+    if parse:
+        result = parse_section_result(Path(parse).read_text(encoding="utf-8"), session_id, section)
+        _output_json(result)
+    else:
+        sys_prompt, user_msg = build_section_prompt(session_id, section)
+        _output_prompt(sys_prompt, user_msg, prompt_file=prompt_file)
+
+
+@session.command("summarize")
+@click.option("--session-id", "-s", required=True, help="Session ID")
+@click.option("--section", required=True, help="Section ID")
+@click.option("--parse", "-p", default=None, type=click.Path(exists=True),
+              help="解析 LLM 响应文件")
+@click.option("--prompt-file", default=None, type=click.Path(),
+              help="将 prompt JSON 写入文件而非 stdout")
+def session_summarize_cmd(session_id, section, parse, prompt_file):
+    """生成 Section 摘要 (存入内部 ContextStore, Agent 不可见)。"""
+    from paper_derived.engine.session_engine import build_summarize_prompt, parse_summarize_result
+
+    if parse:
+        result = parse_summarize_result(Path(parse).read_text(encoding="utf-8"), session_id, section)
+        _output_json(result)
+    else:
+        sys_prompt, user_msg = build_summarize_prompt(session_id, section)
+        _output_prompt(sys_prompt, user_msg, prompt_file=prompt_file)
+
+
+@session.command("assemble")
+@click.option("--session-id", "-s", required=True, help="Session ID")
+@click.option("--output", "-O", default=None, help="输出文件路径")
+@click.option("--format", "-f", "output_format", default=None,
+              help="输出格式: md|docx|pdf|json")
+def session_assemble_cmd(session_id, output, output_format):
+    """组装最终文档 (解析交叉引用, 无需 LLM)。"""
+    from paper_derived.engine.session_engine import session_assemble
+    from paper_derived.format_writer import write_document
+
+    doc = session_assemble(session_id)
+
+    if output:
+        out_path = write_document(doc, output, fmt=output_format)
+        click.echo(f"已输出 → {out_path}")
+    else:
+        _output_json(doc)
+
+
+@session.command("status")
+@click.option("--session-id", "-s", required=True, help="Session ID")
+def session_status_cmd(session_id):
+    """查看会话状态。无需 LLM。"""
+    from paper_derived.engine.session_engine import session_status
+
+    result = session_status(session_id)
+    _output_json(result)
+
+
+@session.command("search")
+@click.option("--session-id", "-s", required=True, help="Session ID")
+@click.argument("query")
+@click.option("--focus", default="", help="聚焦到指定 entity_key 获取完整详情")
+@click.option("--budget", default=2000, type=int, help="返回结果的 token 预算上限")
+def session_search_cmd(session_id, query, focus, budget):
+    """搜索上下文库（带 token 预算防护）。无需 LLM。"""
+    from paper_derived.engine.session_engine import session_search
+
+    result = session_search(session_id, query, focus=focus, budget=budget)
+    _output_json(result)
+
+
+@session.command("list")
+def session_list_cmd():
+    """列出所有会话。"""
+    from paper_derived.session_store import list_sessions
+
+    sessions = list_sessions()
+    if not sessions:
+        click.echo("(暂无会话)")
+        return
+    _output_json(sessions)
+
+
+@session.command("delete")
+@click.argument("session_id")
+def session_delete_cmd(session_id):
+    """删除会话。"""
+    from paper_derived.session_store import delete_session
+
+    delete_session(session_id)
+    click.echo(f"会话 '{session_id}' 已删除")
+
+
+# ── Helpers ────────────────────────────────────────────────────
+
+
+def _load_session_or_error(session_id: str):
+    """加载 session 对象, 用于 build_feed_prompt 等需要 session 对象的函数。"""
+    from paper_derived.session_store import load_session
+    session, _, _ = load_session(session_id)
+    return session
+
+
+if __name__ == "__main__":
+    main()
