@@ -31,34 +31,66 @@ def main():
 # ── Output helpers ─────────────────────────────────────────────
 
 
+PROMPT_SYSTEM_MARKER = "==== SYSTEM ===="
+PROMPT_USER_MARKER = "==== USER ===="
+
+
+def _write_prompt_text(path: str | Path, system_prompt: str, user_message: str) -> None:
+    """将 prompt 写为纯文本文件（真实换行）.
+
+    不用 JSON：JSON 会把整个 prompt 压成单行超长字符串，Agent 的文件读取工具
+    对超长行会截断，导致子代理拿到残缺 prompt。文本格式用分隔符区分两段：
+
+        ==== SYSTEM ====
+        <系统指令>
+
+        ==== USER ====
+        <任务>
+    """
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(
+        f"{PROMPT_SYSTEM_MARKER}\n{system_prompt}\n\n{PROMPT_USER_MARKER}\n{user_message}\n",
+        encoding="utf-8",
+    )
+
+
+def _prompt_summary(prompt_file: str, system_prompt: str, user_message: str) -> dict:
+    summary = {
+        "status": "prompt_written",
+        "prompt_file": str(prompt_file),
+    }
+    try:
+        from paper_derived.engine._tokens import count_tokens
+        summary["prompt_tokens"] = count_tokens(system_prompt) + count_tokens(user_message)
+    except Exception:
+        summary["prompt_chars"] = len(system_prompt) + len(user_message)
+    return summary
+
+
 def _output_prompt(system_prompt: str, user_message: str, prompt_file: str | None = None) -> None:
     """输出 prompt 供 Agent 消费.
 
-    当 prompt_file 指定时，将 prompt JSON 写入文件，stdout 仅输出紧凑摘要。
-    不指定时行为不变（向后兼容）。
+    当 prompt_file 指定时，将 prompt 写为纯文本文件，stdout 仅输出紧凑摘要。
+    不指定时输出 JSON 到 stdout（向后兼容；会灌满 Agent 上下文，不推荐）。
     """
-    prompt_data = {
-        "system": system_prompt,
-        "user": user_message,
-    }
-
     if prompt_file:
-        Path(prompt_file).write_text(
-            json.dumps(prompt_data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        summary = {
-            "status": "prompt_written",
-            "prompt_file": str(prompt_file),
-        }
-        try:
-            from paper_derived.engine._tokens import count_tokens
-            summary["prompt_tokens"] = count_tokens(system_prompt) + count_tokens(user_message)
-        except Exception:
-            summary["prompt_chars"] = len(system_prompt) + len(user_message)
-        click.echo(json.dumps(summary, ensure_ascii=False))
+        _write_prompt_text(prompt_file, system_prompt, user_message)
+        click.echo(json.dumps(_prompt_summary(prompt_file, system_prompt, user_message), ensure_ascii=False))
     else:
-        click.echo(json.dumps(prompt_data, ensure_ascii=False, indent=2))
+        click.echo(json.dumps({
+            "system": system_prompt,
+            "user": user_message,
+        }, ensure_ascii=False, indent=2))
+
+
+def _out_option(f):
+    """`--out`（别名 `--prompt-file`）：prompt 落盘选项，全命令统一."""
+    return click.option(
+        "--out", "--prompt-file", "prompt_file",
+        default=None, type=click.Path(),
+        help="将 prompt 写入文本文件而非 stdout（子代理委托必用，防止撑爆主上下文）",
+    )(f)
 
 
 def _output_json(obj) -> None:
@@ -66,6 +98,31 @@ def _output_json(obj) -> None:
     if hasattr(obj, "to_dict"):
         obj = obj.to_dict()
     click.echo(json.dumps(obj, ensure_ascii=False, indent=2))
+
+
+def _write_result_json(obj, output: str) -> None:
+    """将结果 JSON 写入文件（主 Agent 只拿路径，不接内容）."""
+    if hasattr(obj, "to_dict"):
+        obj = obj.to_dict()
+    p = Path(output)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _output_asset(result, output: str | None, asset_name: str, slim: bool) -> None:
+    """输出 InputAsset：有 -O 时写文件 + 状态摘要，否则全量 stdout（兼容，不推荐）."""
+    if output:
+        _write_result_json(result, output)
+        click.echo(json.dumps({
+            "status": "asset_written",
+            "asset_file": str(output),
+            "name": asset_name,
+            "entities": len(getattr(result, "entities", []) or []),
+            "summary_chars": len(getattr(result, "summary", "") or ""),
+            "slim": slim,
+        }, ensure_ascii=False))
+    else:
+        _output_json(result)
 
 
 # ── Template commands ──────────────────────────────────────────
@@ -82,8 +139,7 @@ def template():
 @click.option("--description", "-d", default="", help="模板描述")
 @click.option("--parse", "-p", default=None, type=click.Path(exists=True),
               help="解析 LLM 响应文件 (而非输出 prompt)")
-@click.option("--prompt-file", default=None, type=click.Path(),
-              help="将 prompt JSON 写入文件而非 stdout (推荐配合子代理委托)")
+@_out_option
 def template_register(sample, name, description, parse, prompt_file):
     """注册模板: 输出分析 prompt，或解析 LLM 响应."""
     from paper_derived.engine.template import (
@@ -125,7 +181,15 @@ def template_register(sample, name, description, parse, prompt_file):
             raise SystemExit(1)
 
         result = parse_register_template_result(llm_response, name, description)
-        _output_json(result)
+        # 模板已由 parse_register_template_result 存入 storage；stdout 只报摘要，
+        # 完整定义用 `template show <id>` 查看，避免整个模板 JSON 灌进 Agent 上下文
+        click.echo(json.dumps({
+            "status": "template_registered",
+            "template_id": result.id,
+            "name": result.name,
+            "sections": len(result.section_ids),
+            "section_ids": result.section_ids,
+        }, ensure_ascii=False))
     else:
         sample_text, _, _ = _read_input_file(sample)
         sys_prompt, user_msg = build_register_template_prompt(sample_text, name, description)
@@ -194,9 +258,10 @@ def input():
               help="解析分块 LLM 响应文件(可多次指定)。合并为单个 InputAsset。")
 @click.option("--slim/--no-slim", default=True,
               help="精简模式：不存储 raw_content，仅保留摘要和实体。（默认开启，大文档推荐）")
-@click.option("--prompt-file", default=None, type=click.Path(),
-              help="将 prompt JSON 写入文件而非 stdout (推荐配合子代理委托)")
-def input_register(file, name, parse, chunk_size, parse_chunks, slim, prompt_file):
+@click.option("--output", "-O", default=None, type=click.Path(),
+              help="解析模式：InputAsset JSON 写入该文件，stdout 仅输出状态摘要（推荐，防止灌主上下文）")
+@_out_option
+def input_register(file, name, parse, chunk_size, parse_chunks, slim, output, prompt_file):
     """注册输入资产: 输出分析 prompt，或解析 LLM 响应.
 
     大文档自动分块：用 --chunk-size 指定每块最大字符数（建议 30000），
@@ -225,14 +290,14 @@ def input_register(file, name, parse, chunk_size, parse_chunks, slim, prompt_fil
             partial = parse_register_input_result(llm_response, "", asset_name, source=file, slim=slim)
             partial_assets.append(partial)
         result = merge_input_assets(partial_assets, raw if not slim else "", asset_name, source=file, slim=slim)
-        _output_json(result)
+        _output_asset(result, output, asset_name, slim)
         return
 
     # 解析单块结果
     if parse:
         llm_response = Path(parse).read_text(encoding="utf-8")
         result = parse_register_input_result(llm_response, raw if not slim else "", asset_name, source=file, slim=slim)
-        _output_json(result)
+        _output_asset(result, output, asset_name, slim)
         return
 
     # 构造 prompt（分块 or 整体）
@@ -248,18 +313,17 @@ def input_register(file, name, parse, chunk_size, parse_chunks, slim, prompt_fil
         from paper_derived.engine._tokens import count_tokens
 
         if prompt_file:
-            # --prompt-file 模式：每块写入独立文件
+            # --out 模式：每块写入独立文本文件 <stem>.chunk-<i><suffix>
+            base = Path(prompt_file)
+            suffix = base.suffix or ".md"
             chunk_files = []
             total_tokens = 0
             for i, chunk in enumerate(chunks):
                 sys_prompt, user_msg = build_register_input_chunk_prompt(
                     chunk, asset_name, chunk_index=i, total_chunks=len(chunks)
                 )
-                chunk_file = f"{prompt_file}.chunk-{i}.json"
-                Path(chunk_file).write_text(json.dumps({
-                    "system": sys_prompt,
-                    "user": user_msg,
-                }, ensure_ascii=False, indent=2), encoding="utf-8")
+                chunk_file = str(base.with_name(f"{base.stem}.chunk-{i}{suffix}"))
+                _write_prompt_text(chunk_file, sys_prompt, user_msg)
                 chunk_tokens = count_tokens(sys_prompt) + count_tokens(user_msg)
                 total_tokens += chunk_tokens
                 chunk_files.append(chunk_file)
@@ -324,8 +388,7 @@ def _load_input_assets(file_paths: list[str]) -> list:
 @click.option("--template", "-t", required=True, help="模板 ID")
 @click.option("--parse", "-p", default=None, type=click.Path(exists=True),
               help="解析 LLM 响应文件")
-@click.option("--prompt-file", default=None, type=click.Path(),
-              help="将 prompt JSON 写入文件而非 stdout")
+@_out_option
 def gen_preflight(inputs, template, parse, prompt_file):
     """资料体检."""
     from paper_derived.engine.generator import build_preflight_prompt, parse_preflight_result
@@ -345,9 +408,10 @@ def gen_preflight(inputs, template, parse, prompt_file):
 @click.option("--template", "-t", required=True, help="模板 ID")
 @click.option("--parse", "-p", default=None, type=click.Path(exists=True),
               help="解析 LLM 响应文件")
-@click.option("--prompt-file", default=None, type=click.Path(),
-              help="将 prompt JSON 写入文件而非 stdout")
-def gen_extract(inputs, template, parse, prompt_file):
+@click.option("--output", "-O", default=None, type=click.Path(),
+              help="解析模式：抽取结果 JSON 写入该文件，stdout 仅输出状态摘要")
+@_out_option
+def gen_extract(inputs, template, parse, output, prompt_file):
     """实体抽取."""
     from paper_derived.engine.generator import build_extract_prompt, parse_extract_result
 
@@ -355,7 +419,19 @@ def gen_extract(inputs, template, parse, prompt_file):
 
     if parse:
         result = parse_extract_result(Path(parse).read_text(encoding="utf-8"))
-        _output_json(result)
+        if output:
+            _write_result_json(result, output)
+            sections = getattr(result, "sections", []) or []
+            click.echo(json.dumps({
+                "status": "extract_written",
+                "output": str(output),
+                "summary": getattr(result, "summary", ""),
+                "sections": len(sections),
+                "items": sum(len(getattr(s, "found", []) or []) for s in sections),
+                "warnings": getattr(result, "warnings", []) or [],
+            }, ensure_ascii=False))
+        else:
+            _output_json(result)
     else:
         sys_prompt, user_msg = build_extract_prompt(assets, template)
         _output_prompt(sys_prompt, user_msg, prompt_file=prompt_file)
@@ -368,8 +444,7 @@ def gen_extract(inputs, template, parse, prompt_file):
               help="输出格式: json|md|docx|pdf（默认从 --output 扩展名推断）")
 @click.option("--parse", "-p", default=None, type=click.Path(exists=True),
               help="解析 LLM 响应文件")
-@click.option("--prompt-file", default=None, type=click.Path(),
-              help="将 prompt JSON 写入文件而非 stdout")
+@_out_option
 def gen_outline(template, output, output_format, parse, prompt_file):
     """生成文档大纲（骨架）。"""
     from paper_derived.engine.generator import build_outline_prompt, parse_outline_result
@@ -401,8 +476,7 @@ def gen_outline(template, output, output_format, parse, prompt_file):
               help="输出格式: json|md|docx|pdf（默认从 --output 扩展名推断）")
 @click.option("--parse", "-p", default=None, type=click.Path(exists=True),
               help="解析 LLM 响应文件")
-@click.option("--prompt-file", default=None, type=click.Path(),
-              help="将 prompt JSON 写入文件而非 stdout")
+@_out_option
 def gen_generate(inputs, template, overrides, sections, extract, into, output, output_format, parse, prompt_file):
     """生成文档树。支持全量或分批生成。"""
     from paper_derived.engine.generator import (
@@ -471,8 +545,7 @@ def gen_generate(inputs, template, overrides, sections, extract, into, output, o
 @click.option("--template", "-t", required=True, help="模板 ID")
 @click.option("--parse", "-p", default=None, type=click.Path(exists=True),
               help="解析 LLM 响应文件")
-@click.option("--prompt-file", default=None, type=click.Path(),
-              help="将 prompt JSON 写入文件而非 stdout")
+@_out_option
 def gen_validate(doc, template, parse, prompt_file):
     """质检."""
     from paper_derived.engine.validator import build_validate_prompt, parse_validate_result
@@ -506,8 +579,7 @@ def revise():
               help="输出格式: json|md|docx|pdf（默认从 --output 扩展名推断）")
 @click.option("--parse", "-p", default=None, type=click.Path(exists=True),
               help="解析 LLM 响应文件")
-@click.option("--prompt-file", default=None, type=click.Path(),
-              help="将 prompt JSON 写入文件而非 stdout")
+@_out_option
 def revise_section_cmd(doc, section_id, instruction, output, output_format, parse, prompt_file):
     """局部修改."""
     from paper_derived.engine.doc_ops import build_revise_section_prompt, parse_revise_result
@@ -535,8 +607,7 @@ def revise_section_cmd(doc, section_id, instruction, output, output_format, pars
               help="输出格式: json|md|docx|pdf（默认从 --output 扩展名推断）")
 @click.option("--parse", "-p", default=None, type=click.Path(exists=True),
               help="解析 LLM 响应文件")
-@click.option("--prompt-file", default=None, type=click.Path(),
-              help="将 prompt JSON 写入文件而非 stdout")
+@_out_option
 def revise_global_cmd(doc, instruction, output, output_format, parse, prompt_file):
     """全局改写."""
     from paper_derived.engine.doc_ops import build_revise_global_prompt, parse_revise_result
@@ -570,7 +641,8 @@ def session():
 
 @session.command("init")
 @click.option("--template", "-t", required=True, help="模板 ID")
-@click.option("--budget", default=120_000, type=int, help="per-section token 预算")
+@click.option("--budget", default=60_000, type=int,
+              help="per-section token 预算（默认 60000；prompt 由子代理执行，预算越大子代理负载越重）")
 @click.option("--output", "-O", default="", help="最终输出文件路径")
 @click.option("--format", "-f", "output_format", default="", help="输出格式")
 def session_init_cmd(template, budget, output, output_format):
@@ -593,8 +665,7 @@ def session_init_cmd(template, budget, output, output_format):
               type=click.Path(exists=True), help="InputAsset JSON 文件")
 @click.option("--parse", "-p", default=None, type=click.Path(exists=True),
               help="解析 LLM 响应文件")
-@click.option("--prompt-file", default=None, type=click.Path(),
-              help="将 prompt JSON 写入文件而非 stdout")
+@_out_option
 def session_feed_cmd(session_id, inputs, parse, prompt_file):
     """喂入输入资产，填充上下文库。Agent 只看到状态报告。"""
     from paper_derived.engine.session_engine import build_feed_prompt, parse_feed_result
@@ -628,8 +699,7 @@ def session_next_cmd(session_id):
 @click.option("--section", required=True, help="Section ID")
 @click.option("--parse", "-p", default=None, type=click.Path(exists=True),
               help="解析 LLM 响应文件")
-@click.option("--prompt-file", default=None, type=click.Path(),
-              help="将 prompt JSON 写入文件而非 stdout")
+@_out_option
 def session_prompt_cmd(session_id, section, parse, prompt_file):
     """获取 Section 生成 prompt (CLI 自动组装上下文)。"""
     from paper_derived.engine.session_engine import build_section_prompt, parse_section_result
@@ -647,8 +717,7 @@ def session_prompt_cmd(session_id, section, parse, prompt_file):
 @click.option("--section", required=True, help="Section ID")
 @click.option("--parse", "-p", default=None, type=click.Path(exists=True),
               help="解析 LLM 响应文件")
-@click.option("--prompt-file", default=None, type=click.Path(),
-              help="将 prompt JSON 写入文件而非 stdout")
+@_out_option
 def session_summarize_cmd(session_id, section, parse, prompt_file):
     """生成 Section 摘要 (存入内部 ContextStore, Agent 不可见)。"""
     from paper_derived.engine.session_engine import build_summarize_prompt, parse_summarize_result

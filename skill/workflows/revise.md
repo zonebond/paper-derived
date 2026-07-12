@@ -8,8 +8,8 @@
 
 ```bash
 # ① 落盘 prompt（含该 Section 原文 + 修改指令）
-$PAPER_DERIVED_BIN revise section <doc.json> <section-id> "修改指令" --out prompts/rev-<section-id>.json
-# ② 子代理读 prompts/rev-<section-id>.json 执行 → 写 responses/rev-<section-id>.json → DONE
+$PAPER_DERIVED_BIN revise section <doc.json> <section-id> "修改指令" --out prompts/rev-<section-id>.md
+# ② 子代理读 prompts/rev-<section-id>.md 执行 → 写 responses/rev-<section-id>.json → DONE
 # ③ 解析并覆盖文档
 $PAPER_DERIVED_BIN revise section <doc.json> <section-id> "修改指令" \
   --parse responses/rev-<section-id>.json -O <doc.json>
@@ -22,8 +22,8 @@ $PAPER_DERIVED_BIN revise section <doc.json> <section-id> "修改指令" \
 用于风格统一、术语替换、语气调整等全局变更。整档原文进 prompt，尤其要走子代理：
 
 ```bash
-$PAPER_DERIVED_BIN revise global <doc.json> "修改指令" --out prompts/rev-global.json
-# → 子代理执行 prompts/rev-global.json → responses/rev-global.json → DONE
+$PAPER_DERIVED_BIN revise global <doc.json> "修改指令" --out prompts/rev-global.md
+# → 子代理执行 prompts/rev-global.md → responses/rev-global.json → DONE
 $PAPER_DERIVED_BIN revise global <doc.json> "修改指令" --parse responses/rev-global.json -O <doc.json>
 ```
 

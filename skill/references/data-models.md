@@ -104,7 +104,7 @@
 | phase | str | init \| feeding \| generating \| assembling \| complete |
 | input_asset_ids | list[str] | 已注册的输入资产 ID |
 | section_progress | dict[str, SectionProgress] | Section 生成进度 |
-| token_budget | int | per-section token 预算（默认 120000） |
+| token_budget | int | per-section token 预算（默认 60000） |
 | checkpoint_version | int | Checkpoint 版本号 |
 
 ## SectionProgress
