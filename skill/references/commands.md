@@ -219,6 +219,34 @@ paper-derived session search -s <session-id> <query> [--focus <entity_key>] [--b
 
 返回匹配的实体列表（snippet + confidence + score）。超出预算自动截断，用 `--focus` 下钻。
 
+### `paper-derived session run`
+
+直驱模式：引擎自己调本地/离线 OpenAI 兼容 Provider，跑完生成循环（无需 Agent 编排）。
+
+```bash
+paper-derived session run -s <session-id> --api-base <url> -m <model> \
+  [--window <tokens>] [--max-sections N] [--no-summarize] [--max-attempts 3] \
+  [--no-assemble] [-O <output>] [-f <format>] [--temperature 0.2] [--max-output 4096]
+```
+
+- `--api-base` / `-m, --model` / `--api-key`：Provider 连接（可用环境变量 `PAPER_DERIVED_API_BASE` / `PAPER_DERIVED_MODEL` / `PAPER_DERIVED_API_KEY`）
+- `--window`：Provider 上下文窗口，自动收缩预算 budget = min(现值, window/2)
+- `--max-sections`：本次最多生成 N 节后停（人工分段审查）
+- 解析失败自动带格式修正重试；缺输入（feed_more）停下报告；中断后重跑自动续传
+- 全部完成默认自动 assemble；stdout 每行一个 JSON 事件
+
+详见 `references/offline-mode.md`。
+
+### `paper-derived llm exec`
+
+执行任意 `--out` 落盘的 prompt 文件（离线环境替代「子代理执行」）。
+
+```bash
+paper-derived llm exec <prompt.md> --api-base <url> -m <model> -o <response-file>
+```
+
+响应原样写入 `-o` 文件，之后照常用对应命令的 `--parse` 解析。
+
 ### `paper-derived session list`
 
 列出所有会话。
