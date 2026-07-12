@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import json
 
-from paper_derived.engine._paths import PROMPTS_DIR
+from paper_derived.engine._paths import read_prompt
 from paper_derived.models.document import DocumentTree
 
 
 def _read_prompt(name: str) -> str:
-    return (PROMPTS_DIR / name).read_text(encoding="utf-8")
+    return read_prompt(name)
 
 
 def build_revise_section_prompt(

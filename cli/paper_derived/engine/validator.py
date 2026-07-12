@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import json
 
-from paper_derived.engine._paths import PROMPTS_DIR
+from paper_derived.engine._paths import read_prompt
 from paper_derived.models.document import DocumentTree
 from paper_derived.models.reports import ValidationReport, ValidationCheckpoint
 from paper_derived.storage import load_template
 
 
 def _read_prompt(name: str) -> str:
-    return (PROMPTS_DIR / name).read_text(encoding="utf-8")
+    return read_prompt(name)
 
 
 def build_validate_prompt(doc: DocumentTree, template_id: str) -> tuple[str, str]:

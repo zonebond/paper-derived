@@ -225,12 +225,13 @@ paper-derived session search -s <session-id> <query> [--focus <entity_key>] [--b
 
 ```bash
 paper-derived session run -s <session-id> --api-base <url> -m <model> \
-  [--window <tokens>] [--max-sections N] [--no-summarize] [--max-attempts 3] \
+  [--window <tokens>] [--compact] [--max-sections N] [--no-summarize] [--max-attempts 3] \
   [--no-assemble] [-O <output>] [-f <format>] [--temperature 0.2] [--max-output 4096]
 ```
 
 - `--api-base` / `-m, --model` / `--api-key`：Provider 连接（可用环境变量 `PAPER_DERIVED_API_BASE` / `PAPER_DERIVED_MODEL` / `PAPER_DERIVED_API_KEY`）
 - `--window`：Provider 上下文窗口，自动收缩预算 budget = min(现值, window/2)
+- `--compact`：用精简版内置 prompt（输出契约不变；小模型推荐）
 - `--max-sections`：本次最多生成 N 节后停（人工分段审查）
 - 解析失败自动带格式修正重试；缺输入（feed_more）停下报告；中断后重跑自动续传
 - 全部完成默认自动 assemble；stdout 每行一个 JSON 事件
@@ -264,4 +265,5 @@ paper-derived session delete <session-id>
 - `--out <file>`（别名 `--prompt-file`）: 构造模式，把 prompt 写入文本文件，stdout 只回摘要（编排必用）
 - `--parse <response-file>`: 解析模式，解析 LLM 响应文件
 - `-O, --output <file>`: 解析产物写入文件（支持的命令上均应使用，避免大 JSON 打 stdout）
+- 环境变量 `PAPER_DERIVED_COMPACT=1`: 所有构造 prompt 的命令改用精简版内置 prompt（小模型/小窗口用，输出契约不变）
 - `--help`: 显示帮助信息

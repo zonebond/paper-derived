@@ -805,12 +805,14 @@ def _make_client(api_base, model, api_key, temperature, max_output, timeout):
 @click.option("--summarize/--no-summarize", "do_summarize", default=True,
               help="每节生成后自动摘要入 ContextStore（默认开，控制下游 prompt 体积）")
 @click.option("--max-attempts", default=3, type=int, help="单 Section 最大尝试次数（含格式修复重试）")
+@click.option("--compact", is_flag=True, default=False,
+              help="使用精简版内置 prompt（小模型推荐；其他命令用 PAPER_DERIVED_COMPACT=1 开启）")
 @click.option("--assemble/--no-assemble", "do_assemble", default=True,
               help="全部完成后自动组装（默认开）")
 @click.option("--output", "-O", default=None, help="组装输出文件路径（默认用 session init 时的配置）")
 @click.option("--format", "-f", "output_format", default=None, help="输出格式: md|docx|pdf|json")
 def session_run_cmd(session_id, api_base, model, api_key, temperature, max_output, timeout,
-                    window, max_sections, do_summarize, max_attempts,
+                    window, max_sections, do_summarize, max_attempts, compact,
                     do_assemble, output, output_format):
     """直驱模式：引擎自己调本地/离线 LLM，跑完生成循环。无需 Agent 编排。
 
@@ -820,6 +822,10 @@ def session_run_cmd(session_id, api_base, model, api_key, temperature, max_outpu
     from paper_derived.runner import run_session
     from paper_derived.engine.session_engine import session_assemble
     from paper_derived.format_writer import write_document
+
+    if compact:
+        from paper_derived.engine._paths import set_compact
+        set_compact(True)
 
     client = _make_client(api_base, model, api_key, temperature, max_output, timeout)
 

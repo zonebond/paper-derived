@@ -103,8 +103,14 @@ paper-derived session run -s $SID --api-base http://localhost:11434/v1 -m qwen2.
 `--window` shrinks the per-section budget to fit small context windows
 (budget = min(current, window/2)). Parse failures retry with a format-repair
 note; missing inputs and repeated failures stop with a report instead of
-pushing through. See `skill/references/offline-mode.md` for the full offline
-pipeline and small-model tuning table.
+pushing through.
+
+For small models, add `--compact` (or `PAPER_DERIVED_COMPACT=1` for the
+prompt-building commands): every built-in system prompt has a trimmed variant
+in `prompts/compact/` with an identical output contract — same JSON schemas,
+none of the explanatory prose that wastes a small window. See
+`skill/references/offline-mode.md` for the full offline pipeline and
+small-model tuning table.
 
 ## Install
 

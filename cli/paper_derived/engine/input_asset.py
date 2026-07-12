@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from paper_derived.engine._paths import PROMPTS_DIR
+from paper_derived.engine._paths import read_prompt
 from paper_derived.models.input_asset import InputAsset, Entity
 
 
 def _read_prompt(name: str) -> str:
-    return (PROMPTS_DIR / name).read_text(encoding="utf-8")
+    return read_prompt(name)
 
 
 def build_register_input_prompt(raw_text: str, name: str) -> tuple[str, str]:
