@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "paper-derived"
-version = "0.1.0"
+version = "0.2.0"  # 与 cli/paper_derived/__init__.py 的 __version__ 保持一致
 requires-python = ">=3.10"
 dependencies = [
     "click>=8.0.0",

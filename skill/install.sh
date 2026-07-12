@@ -47,6 +47,12 @@ install_to() {
   local dest="$1"
   mkdir -p "$dest"
   cp "$SCRIPT_DIR/SKILL.md" "$dest/SKILL.md"
+
+  # 盖安装戳：commit + 安装时间，写进 SKILL.md 的版本行（/slash 触发即可见）
+  local commit stamp
+  commit="$(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  stamp="（commit ${commit}，安装于 $(date +%Y-%m-%d)）"
+  sed -i.bak "s|<!-- BUILD_INFO -->|${stamp}|" "$dest/SKILL.md" && rm -f "$dest/SKILL.md.bak"
   if [[ -d "$SCRIPT_DIR/workflows" ]]; then
     mkdir -p "$dest/workflows"
     cp -r "$SCRIPT_DIR/workflows/"* "$dest/workflows/"
@@ -72,6 +78,10 @@ install_to() {
   fi
 
   echo "已安装 → $dest"
+  if [[ -x "$dest/paper-derived" ]]; then
+    echo "版本核对: $("$dest/paper-derived" version 2>/dev/null || echo '二进制不支持 version 命令（旧版），建议重新构建')"
+  fi
+  grep -m1 "Skill 版本" "$dest/SKILL.md" || true
 }
 
 case "$ADAPTER" in
