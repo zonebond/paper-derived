@@ -19,15 +19,15 @@
 本工作流每一步都是「引擎构造 prompt → LLM 执行 → 引擎解析」。**执行 prompt 的 LLM 必须是子代理，不是你（主编排上下文）。** 违反此原则，几份大资料 + 一次整档生成就能撑爆上下文。规则：
 
 1. **主 Agent 绝不亲自执行引擎输出的 prompt**——用 Task 工具起子代理（权限仅 Read/Write）。
-2. **prompt 用 `--out` 落盘到 `prompts/`**（引擎未支持时用 `> file`）；子代理把响应写入 `responses/`；主 Agent 只对响应文件 `--parse` 并读**状态**。
+2. **prompt 用 `--out` 落盘到 `prompts/`**；子代理把响应写入 `responses/`；主 Agent 只对响应文件 `--parse` 并读**状态**。解析产物大的命令（`input register`、`gen extract`、`gen generate`）一律加 `-O <file>` 落盘。
 3. **主 Agent 绝不读取 prompt 文件、响应文件、输入资产原文的正文内容。**
 
 ### 子代理执行协议（本文件通用，凡「执行 prompt」处均套用）
 
 ```bash
-$PAPER_DERIVED_BIN <cmd> <args> --out prompts/<key>.json     # ① 落盘 prompt
-# ② 起子代理：读 prompts/<key>.json（system=系统指令, user=任务），严格按其要求生成，
-#    把完整响应原样写入 responses/<key>.json，只回 DONE <key>，不输出正文到对话
+$PAPER_DERIVED_BIN <cmd> <args> --out prompts/<key>.md       # ① 落盘 prompt（文本格式）
+# ② 起子代理：读 prompts/<key>.md（==== SYSTEM ==== 之后是系统指令，==== USER ==== 之后是任务），
+#    严格按其要求生成，把完整响应原样写入 responses/<key>.json，只回 DONE <key>，不输出正文到对话
 $PAPER_DERIVED_BIN <cmd> <args> --parse responses/<key>.json # ③ 主 Agent 只看返回状态
 ```
 
@@ -51,36 +51,38 @@ $PAPER_DERIVED_BIN template list --json
 
 ```bash
 # ① 落盘注册 prompt
-$PAPER_DERIVED_BIN input register <file> -n <name> --out prompts/reg-<name>.json
-# ② 子代理读 prompts/reg-<name>.json 执行 → 写 responses/reg-<name>.json → DONE
-# ③ 解析（--slim 见下）
-$PAPER_DERIVED_BIN input register <file> -n <name> --parse responses/reg-<name>.json --slim
+$PAPER_DERIVED_BIN input register <file> -n <name> --out prompts/reg-<name>.md
+# ② 子代理读 prompts/reg-<name>.md 执行 → 写 responses/reg-<name>.json → DONE
+# ③ 解析并落盘 InputAsset（-O 必加：stdout 只回状态摘要，资产 JSON 不进主上下文）
+$PAPER_DERIVED_BIN input register <file> -n <name> --parse responses/reg-<name>.json --slim -O input-<name>.json
+# → {"status":"asset_written","asset_file":"input-<name>.json","entities":42,...}
 ```
 
-产物：包含 `summary` + `entities` 的 InputAsset JSON 文件。所有输入注册完得到一个 JSON 文件列表（主 Agent 只需记住路径，不读内容）。
+产物：包含 `summary` + `entities` 的 InputAsset JSON 文件（`input-<name>.json`）。所有输入注册完得到一个 JSON 文件列表（主 Agent 只需记住路径，不读内容）。
 
 > 用户直接贴文本（无文件路径）时，先写入临时文件，再走同样流程。
 
 ### 大文档分块注册（并行子代理）
 
-超大文档（超上下文窗口）引擎会自动输出分块 prompt，或手动指定：
+超大文档（超上下文窗口）用 `--chunk-size` 指定分块：
 
 ```bash
-$PAPER_DERIVED_BIN input register <file> -n <name> --chunk-size 30000 --out prompts/reg-<name>.json
+$PAPER_DERIVED_BIN input register <file> -n <name> --chunk-size 30000 --out prompts/reg-<name>.md
 ```
 
-输出为 `{"mode":"chunked","total_chunks":4,"chunk_size":30000,"chunks":[{index,system,user}...]}`。
+`--out` 模式下引擎**自动把每块写成独立文件** `prompts/reg-<name>.chunk-<i>.md`，stdout 只回：
+`{"status":"prompts_written","mode":"chunked","total_chunks":4,"prompt_files":[...],"total_prompt_tokens":...}`。
 
 **编排（关键：每块一个子代理，可并行）：**
-1. 主 Agent 读 `prompts/reg-<name>.json` **仅为拆分**——但注意每块 user 含 30000 字符原文，别让这些进你的上下文。更稳的做法：让引擎的 `--out` 直接把每块拆成 `prompts/reg-<name>-chunk-<i>.json` 独立文件（建议给引擎补此行为），主 Agent 只按 `total_chunks` 数量派发子代理。
-2. **并发**起 N 个子代理，第 i 个读 `prompts/reg-<name>-chunk-<i>.json` 执行 → 写 `responses/reg-<name>-chunk-<i>.json` → DONE。
-3. 合并（`--slim` 省略 raw_content）：
+1. 主 Agent 只看 stdout 摘要里的 `prompt_files` 列表，**不读任何分块文件的内容**（每块含 30000 字符原文）。
+2. **并发**起 N 个子代理，第 i 个读 `prompts/reg-<name>.chunk-<i>.md` 执行 → 写 `responses/reg-<name>-chunk-<i>.json` → DONE。
+3. 合并（`--slim` 省略 raw_content；`-O` 落盘，主上下文只收状态摘要）：
 
 ```bash
 $PAPER_DERIVED_BIN input register <file> -n <name> \
   --parse-chunks responses/reg-<name>-chunk-0.json \
   --parse-chunks responses/reg-<name>-chunk-1.json \
-  --parse-chunks responses/reg-<name>-chunk-2.json --slim
+  --parse-chunks responses/reg-<name>-chunk-2.json --slim -O input-<name>.json
 ```
 
 合并策略：summary 分号拼接；entities 按 `(kind,name)` 去重保留最详版本；raw_content 保留完整原文（但 `--slim` 会在产出 JSON 里置空）。
@@ -94,7 +96,7 @@ $PAPER_DERIVED_BIN input register <file> -n <name> \
 ## Step 3: 资料体检（走子代理）
 
 ```bash
-$PAPER_DERIVED_BIN gen preflight -i input-1.json -i input-2.json -t <template-id> --out prompts/preflight.json
+$PAPER_DERIVED_BIN gen preflight -i input-1.json -i input-2.json -t <template-id> --out prompts/preflight.md
 # → 子代理执行 → responses/preflight.json
 $PAPER_DERIVED_BIN gen preflight -i input-1.json -i input-2.json -t <template-id> --parse responses/preflight.json
 ```
@@ -104,7 +106,7 @@ $PAPER_DERIVED_BIN gen preflight -i input-1.json -i input-2.json -t <template-id
 ## Step 4: 实体抽取（走子代理，可选但推荐）
 
 ```bash
-$PAPER_DERIVED_BIN gen extract -i input-1.json -i input-2.json -t <template-id> --out prompts/extract.json
+$PAPER_DERIVED_BIN gen extract -i input-1.json -i input-2.json -t <template-id> --out prompts/extract.md
 # → 子代理执行 → responses/extract.json
 $PAPER_DERIVED_BIN gen extract -i input-1.json -i input-2.json -t <template-id> --parse responses/extract.json -O extract-result.json
 ```
@@ -114,8 +116,8 @@ $PAPER_DERIVED_BIN gen extract -i input-1.json -i input-2.json -t <template-id> 
 ## Step 5: 生成文档（走子代理）
 
 ```bash
-$PAPER_DERIVED_BIN gen generate -i input-1.json -i input-2.json -t <template-id> --out prompts/gen.json
-# → 子代理读 prompts/gen.json 执行 → 写 responses/gen.json → DONE
+$PAPER_DERIVED_BIN gen generate -i input-1.json -i input-2.json -t <template-id> --out prompts/gen.md
+# → 子代理读 prompts/gen.md 执行 → 写 responses/gen.json → DONE
 $PAPER_DERIVED_BIN gen generate -i input-1.json -i input-2.json -t <template-id> --parse responses/gen.json -O output.json
 # 有 Step 4 修正时追加：--overrides corrected-extract.json
 ```
@@ -136,8 +138,8 @@ $PAPER_DERIVED_BIN gen generate -i input-1.json -i input-2.json -t <template-id>
    # 批次 1
    $PAPER_DERIVED_BIN gen generate -i input-1.json -i input-2.json -t <template-id> \
      --sections scope,identification,referenced-documents \
-     --extract extract-result.json --into doc.json --out prompts/batch-1.json
-   # → 子代理执行 prompts/batch-1.json → responses/batch-1.json → DONE
+     --extract extract-result.json --into doc.json --out prompts/batch-1.md
+   # → 子代理执行 prompts/batch-1.md → responses/batch-1.json → DONE
    $PAPER_DERIVED_BIN gen generate -i input-1.json -i input-2.json -t <template-id> \
      --sections scope,identification,referenced-documents \
      --extract extract-result.json --into doc.json -O doc.json --parse responses/batch-1.json
@@ -162,7 +164,7 @@ $PAPER_DERIVED_BIN gen generate -i input-1.json -i input-2.json -t <template-id>
 ## Step 6: 质检（走子代理）
 
 ```bash
-$PAPER_DERIVED_BIN gen validate output.json -t <template-id> --out prompts/validate.json
+$PAPER_DERIVED_BIN gen validate output.json -t <template-id> --out prompts/validate.md
 # → 子代理执行 → responses/validate.json
 $PAPER_DERIVED_BIN gen validate output.json -t <template-id> --parse responses/validate.json
 ```

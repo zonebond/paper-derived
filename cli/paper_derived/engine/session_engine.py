@@ -46,7 +46,7 @@ def _read_prompt(name: str) -> str:
 
 def session_init(
     template_id: str,
-    token_budget: int = 120_000,
+    token_budget: int = 60_000,
     output_path: str = "",
     output_format: str = "",
 ) -> GenerationSession:

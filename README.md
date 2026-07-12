@@ -45,30 +45,35 @@ Every command has two modes:
 
 ### 1. Build prompt
 ```bash
-paper-derived template register sample.md -n api-design
-# → {"system": "...", "user": "..."}
+paper-derived template register sample.md -n api-design --out prompts/reg.md
+# → {"status": "prompt_written", "prompt_file": "prompts/reg.md", "prompt_tokens": 8200}
 ```
-Agent executes this prompt with its own LLM and saves the response.
+`--out` writes the prompt as a plain-text file (`==== SYSTEM ====` / `==== USER ====`
+sections) so a subagent can read and execute it without the prompt ever entering the
+orchestrating agent's context. Omitting `--out` prints the full `{"system", "user"}`
+JSON to stdout (legacy mode — floods the agent context, not recommended for orchestration).
 
 ### 2. Parse response
 ```bash
 paper-derived template register sample.md -n api-design --parse response.json
-# → parses LLM response, saves template, outputs Template JSON
+# → parses LLM response, saves template, prints a compact registration summary
 ```
+Commands whose parsed output is large (`input register`, `gen extract`, `gen generate`)
+accept `-O <file>` to write the result to disk and print only a status summary.
 
 ## Agent Workflow Example
 
 Registering an API design template with Claude Code:
 
 ```
-1. paper-derived template register ./samples/api-design-v1.md -n api-design
-   → returns {"system": "...", "user": "..."}
+1. paper-derived template register ./samples/api-design-v1.md -n api-design --out prompts/reg.md
+   → {"status": "prompt_written", "prompt_file": "prompts/reg.md", "prompt_tokens": 8200}
 
-2. Agent executes the prompt with its own LLM
-   → saves LLM response to /tmp/response.json
+2. Agent spawns a subagent that reads prompts/reg.md, executes it with its own LLM,
+   and writes the raw response to responses/reg.json
 
-3. paper-derived template register ./samples/api-design-v1.md -n api-design --parse /tmp/response.json
-   → {"id": "api-design", "name": "API Design", "extraction_prompt": "...", ...}
+3. paper-derived template register ./samples/api-design-v1.md -n api-design --parse responses/reg.json
+   → {"status": "template_registered", "template_id": "api-design", "sections": 5, ...}
 ```
 
 Full document generation pipeline:

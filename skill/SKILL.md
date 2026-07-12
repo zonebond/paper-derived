@@ -33,27 +33,29 @@ PAPER_DERIVED_BIN="./paper-derived"
 每条命令的通用模式：
 
 ```bash
-$PAPER_DERIVED_BIN <command> <args>                 # 构造 prompt
-$PAPER_DERIVED_BIN <command> <args> --out p.json     # 构造 prompt 并写入文件（推荐，避免灌主上下文）
+$PAPER_DERIVED_BIN <command> <args>                 # 构造 prompt（全量打 stdout，禁止在编排中使用）
+$PAPER_DERIVED_BIN <command> <args> --out p.md       # 构造 prompt 并写入文本文件（必用，避免灌主上下文）
 $PAPER_DERIVED_BIN <command> <args> --parse r.json   # 解析子代理产出的响应
 ```
+
+`--out` 写出的是**纯文本文件**（不是 JSON）：`==== SYSTEM ====` 之后是系统指令，`==== USER ====` 之后是任务。真实换行、无超长单行，子代理用 Read 工具可完整读取。stdout 只回一行摘要（含 `prompt_tokens` 估算）。
 
 ## 🔴 上下文纪律（全流程铁律，防 token 爆炸）
 
 本 skill 的每个流程本质是「引擎构造 prompt → 某个 LLM 执行 → 引擎解析」。爆上下文的唯一根源，是让**主编排上下文**去执行那些体积巨大的 prompt（受 `--budget` 约束可达数万 token）+ 承接生成结果，跨十几个 Section 累加必然超限，且 auto-compact 会摘丢跨节精确状态。因此：
 
 1. **主 Agent 绝不亲自执行引擎输出的 prompt。** 一律用 Task 工具起子代理执行（工具权限仅需 Read/Write）。
-2. **prompt 与响应一律走文件。** 用 `--out` 把 prompt 写入 `prompts/`（引擎未支持时用 `> file` 重定向）；子代理把响应写入 `responses/`；主 Agent 只对 `responses/*.json` 跑 `--parse` 并读取其**状态**。
-3. **主 Agent 绝不读取 `prompts/*.json`、`responses/*.json`、输入资产原文的正文内容。** 需要排查时，派子代理去读并回报要点。
+2. **prompt 与响应一律走文件。** 用 `--out` 把 prompt 写入 `prompts/`；子代理把响应写入 `responses/`；主 Agent 只对 `responses/*.json` 跑 `--parse` 并读取其**状态**。解析产物大的命令（`input register`、`gen extract`、`gen generate`）一律加 `-O <file>` 落盘，stdout 只回状态摘要。
+3. **主 Agent 绝不读取 `prompts/*`、`responses/*`、输入资产原文的正文内容。** 需要排查时，派子代理去读并回报要点。
 4. **中间状态全部落盘**（ContextStore、checkpoint、prompts/responses），不驻留在你的对话里。这样即使 `/clear` 也能凭 `session_id` 续传。
 
 ### 子代理执行协议（通用）
 
-对任何输出 `{"system","user"}` 的命令：
+对任何构造 prompt 的命令：
 
 ```bash
-$PAPER_DERIVED_BIN <cmd> <args> --out prompts/<key>.json     # ① 落盘 prompt
-# ② 起子代理，指令：读 prompts/<key>.json（system=系统指令, user=任务），
+$PAPER_DERIVED_BIN <cmd> <args> --out prompts/<key>.md       # ① 落盘 prompt（文本格式）
+# ② 起子代理，指令：读 prompts/<key>.md（==== SYSTEM ==== 之后是系统指令，==== USER ==== 之后是任务），
 #    严格按其要求生成，把完整响应原样写入 responses/<key>.json，只回 DONE <key>，不输出正文到对话
 $PAPER_DERIVED_BIN <cmd> <args> --parse responses/<key>.json # ③ 主 Agent 只看返回状态
 ```
