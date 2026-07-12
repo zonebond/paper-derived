@@ -80,6 +80,10 @@ $PAPER_DERIVED_BIN <cmd> <args> --parse responses/<key>.json # ③ 主 Agent 只
 
 ## 工作流路由
 
+> **离线/本地小模型场景**：用户明确要在离线 LLM Provider（Ollama/vLLM 等）下运行时，
+> 不走下方 Agent 编排工作流——改用引擎直驱模式（`session run` + `llm exec`），
+> 读取 `references/offline-mode.md` 按其流水线执行。
+
 根据用户请求，**读取**对应工作流文件后再执行：
 
 ```
@@ -128,6 +132,7 @@ $PAPER_DERIVED_BIN <cmd> <args> --parse responses/<key>.json # ③ 主 Agent 只
 | `references/data-models.md` | 数据模型字段定义 | 需要理解返回值结构时 |
 | `references/session-states.md` | Session 状态机 + 错误恢复 + 预算调优 | Session 遇到错误或需调优时 |
 | `references/large-doc-strategies.md` | 大文档策略对比（分块/分批/Session） | 拿不准该用哪种策略时 |
+| `references/offline-mode.md` | 离线/本地小模型直驱模式（`session run` / `llm exec`） | 用户要求在离线 LLM Provider 下运行时 |
 | `examples/api-design-workflow.md` | API 设计文档生成示例 | 首次使用时参考 |
 
 ## 安装

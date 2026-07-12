@@ -83,6 +83,35 @@ preflight → extract → generate → validate → revise
 (each step: build prompt → Agent calls LLM → parse response)
 ```
 
+## Offline / Direct-Drive Mode
+
+For offline environments with a local OpenAI-compatible provider (Ollama, vLLM,
+LM Studio, llama.cpp server), the engine can call the LLM itself — no agent
+orchestration, no orchestration context to overflow. Each call is a stateless
+single prompt bounded by the session budget; interrupted runs resume from the
+on-disk checkpoint.
+
+```bash
+# Execute any --out prompt file directly (replaces subagent execution)
+paper-derived llm exec prompts/reg.md --api-base http://localhost:11434/v1 -m qwen2.5:14b -o responses/reg.json
+
+# Drive the whole section-generation loop (next → prompt → call → parse → summarize)
+paper-derived session run -s $SID --api-base http://localhost:11434/v1 -m qwen2.5:14b \
+  --window 32768 -O output.md
+```
+
+`--window` shrinks the per-section budget to fit small context windows
+(budget = min(current, window/2)). Parse failures retry with a format-repair
+note; missing inputs and repeated failures stop with a report instead of
+pushing through.
+
+For small models, add `--compact` (or `PAPER_DERIVED_COMPACT=1` for the
+prompt-building commands): every built-in system prompt has a trimmed variant
+in `prompts/compact/` with an identical output contract — same JSON schemas,
+none of the explanatory prose that wastes a small window. See
+`skill/references/offline-mode.md` for the full offline pipeline and
+small-model tuning table.
+
 ## Install
 
 ### CLI

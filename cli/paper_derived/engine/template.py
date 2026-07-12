@@ -12,13 +12,13 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from paper_derived.engine._paths import PROMPTS_DIR
+from paper_derived.engine._paths import read_prompt
 from paper_derived.models.template import Template, TemplateSummary
 from paper_derived.storage import save_template, load_template, list_all_templates
 
 
 def _read_prompt(name: str) -> str:
-    return (PROMPTS_DIR / name).read_text(encoding="utf-8")
+    return read_prompt(name)
 
 
 # ── Prompt builders ────────────────────────────────────────────

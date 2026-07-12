@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from paper_derived.engine._paths import PROMPTS_DIR
+from paper_derived.engine._paths import read_prompt
 from paper_derived.engine._tokens import count_tokens
 from paper_derived.engine.context_assembler import assemble_section_context
 from paper_derived.models.session import GenerationSession, SectionProgress, make_session_id, now_iso
@@ -36,7 +36,7 @@ from paper_derived.storage import load_template
 
 
 def _read_prompt(name: str) -> str:
-    return (PROMPTS_DIR / name).read_text(encoding="utf-8")
+    return read_prompt(name)
 
 
 # ═══════════════════════════════════════════════════════════════

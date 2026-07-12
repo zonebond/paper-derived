@@ -772,6 +772,91 @@ def session_search_cmd(session_id, query, focus, budget):
     _output_json(result)
 
 
+def _llm_client_options(f):
+    """直驱模式的 provider 连接选项（session run / llm exec 共用）."""
+    f = click.option("--api-base", required=True, envvar="PAPER_DERIVED_API_BASE",
+                     help="OpenAI 兼容 API 地址，如 http://localhost:11434/v1（Ollama）")(f)
+    f = click.option("--model", "-m", required=True, envvar="PAPER_DERIVED_MODEL",
+                     help="模型名，如 qwen2.5:14b")(f)
+    f = click.option("--api-key", default="", envvar="PAPER_DERIVED_API_KEY",
+                     help="API Key（本地 provider 通常不需要）")(f)
+    f = click.option("--temperature", default=0.2, type=float, help="采样温度（默认 0.2）")(f)
+    f = click.option("--max-output", default=4096, type=int,
+                     help="单次调用的最大输出 token（默认 4096）")(f)
+    f = click.option("--timeout", default=600.0, type=float, help="单次调用超时秒数")(f)
+    return f
+
+
+def _make_client(api_base, model, api_key, temperature, max_output, timeout):
+    from paper_derived.llm import LLMClient
+    return LLMClient(
+        api_base=api_base, model=model, api_key=api_key,
+        temperature=temperature, max_output_tokens=max_output, timeout=timeout,
+    )
+
+
+@session.command("run")
+@click.option("--session-id", "-s", required=True, help="Session ID")
+@_llm_client_options
+@click.option("--window", default=0, type=int,
+              help="Provider 上下文窗口（token）。指定后自动收缩预算：budget = min(现值, window/2)")
+@click.option("--max-sections", default=0, type=int,
+              help="本次最多生成的 Section 数（0=不限）。用于人工分段审查")
+@click.option("--summarize/--no-summarize", "do_summarize", default=True,
+              help="每节生成后自动摘要入 ContextStore（默认开，控制下游 prompt 体积）")
+@click.option("--max-attempts", default=3, type=int, help="单 Section 最大尝试次数（含格式修复重试）")
+@click.option("--compact", is_flag=True, default=False,
+              help="使用精简版内置 prompt（小模型推荐；其他命令用 PAPER_DERIVED_COMPACT=1 开启）")
+@click.option("--assemble/--no-assemble", "do_assemble", default=True,
+              help="全部完成后自动组装（默认开）")
+@click.option("--output", "-O", default=None, help="组装输出文件路径（默认用 session init 时的配置）")
+@click.option("--format", "-f", "output_format", default=None, help="输出格式: md|docx|pdf|json")
+def session_run_cmd(session_id, api_base, model, api_key, temperature, max_output, timeout,
+                    window, max_sections, do_summarize, max_attempts, compact,
+                    do_assemble, output, output_format):
+    """直驱模式：引擎自己调本地/离线 LLM，跑完生成循环。无需 Agent 编排。
+
+    每次 LLM 调用都是无状态单 prompt；中断后重跑本命令自动续传。
+    遇到缺输入（feed_more）或连续失败会停下报告，不硬闯。
+    """
+    from paper_derived.runner import run_session
+    from paper_derived.engine.session_engine import session_assemble
+    from paper_derived.format_writer import write_document
+
+    if compact:
+        from paper_derived.engine._paths import set_compact
+        set_compact(True)
+
+    client = _make_client(api_base, model, api_key, temperature, max_output, timeout)
+
+    def on_event(ev: dict) -> None:
+        click.echo(json.dumps(ev, ensure_ascii=False))
+
+    summary = run_session(
+        session_id, client,
+        window=window, max_sections=max_sections,
+        do_summarize=do_summarize, max_attempts=max_attempts,
+        on_event=on_event,
+    )
+
+    if summary["status"] == "ready_to_assemble" and do_assemble:
+        from paper_derived.session_store import load_session as _load
+        doc = session_assemble(session_id)
+        sess, _, _ = _load(session_id)
+        out_path = output or sess.output_path
+        if out_path:
+            written = write_document(doc, out_path, fmt=output_format or sess.output_format or None)
+            click.echo(json.dumps({"event": "assembled", "output": str(written)}, ensure_ascii=False))
+        else:
+            click.echo(json.dumps({
+                "event": "assembled",
+                "hint": f"未指定输出路径。导出: session assemble -s {session_id} -O <file>",
+            }, ensure_ascii=False))
+
+    if summary["status"] in ("stuck",) or summary["failed"]:
+        raise SystemExit(1)
+
+
 @session.command("list")
 def session_list_cmd():
     """列出所有会话。"""
@@ -792,6 +877,47 @@ def session_delete_cmd(session_id):
 
     delete_session(session_id)
     click.echo(f"会话 '{session_id}' 已删除")
+
+
+# ── LLM 直驱命令 ────────────────────────────────────────────────
+
+
+@main.group(name="llm")
+def llm_group():
+    """直驱模式：本地/离线 OpenAI 兼容 Provider 直接执行 prompt."""
+
+
+@llm_group.command("exec")
+@click.argument("prompt_file", type=click.Path(exists=True))
+@_llm_client_options
+@click.option("--output", "-o", "response_file", required=True, type=click.Path(),
+              help="LLM 响应写入该文件（之后照常用对应命令的 --parse 解析）")
+def llm_exec_cmd(prompt_file, api_base, model, api_key, temperature, max_output, timeout,
+                 response_file):
+    """执行一个 `--out` 落盘的 prompt 文件，响应写入文件。
+
+    离线环境下替代「子代理执行」：register / feed / extract / validate / revise
+    等所有含 LLM 步骤都可用本命令执行，再用原命令 --parse 解析。
+    """
+    from paper_derived.llm import read_prompt_file, LLMError
+
+    client = _make_client(api_base, model, api_key, temperature, max_output, timeout)
+    system, user = read_prompt_file(prompt_file)
+    try:
+        response = client.chat(system, user)
+    except LLMError as e:
+        click.echo(json.dumps({"status": "error", "error": str(e)[:500]}, ensure_ascii=False))
+        raise SystemExit(1)
+
+    p = Path(response_file)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(response, encoding="utf-8")
+    click.echo(json.dumps({
+        "status": "executed",
+        "prompt_file": str(prompt_file),
+        "response_file": str(response_file),
+        "response_chars": len(response),
+    }, ensure_ascii=False))
 
 
 # ── Helpers ────────────────────────────────────────────────────
