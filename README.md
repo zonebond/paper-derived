@@ -45,8 +45,8 @@ Every command has two modes:
 
 ### 1. Build prompt
 ```bash
-paper-derived template register sample.md -n api-design --out prompts/reg.md
-# → {"status": "prompt_written", "prompt_file": "prompts/reg.md", "prompt_tokens": 8200}
+paper-derived template register sample.md -n api-design --out .pd/prompts/reg.md
+# → {"status": "prompt_written", "prompt_file": ".pd/prompts/reg.md", "prompt_tokens": 8200}
 ```
 `--out` writes the prompt as a plain-text file (`==== SYSTEM ====` / `==== USER ====`
 sections) so a subagent can read and execute it without the prompt ever entering the
@@ -66,13 +66,13 @@ accept `-O <file>` to write the result to disk and print only a status summary.
 Registering an API design template with Claude Code:
 
 ```
-1. paper-derived template register ./samples/api-design-v1.md -n api-design --out prompts/reg.md
-   → {"status": "prompt_written", "prompt_file": "prompts/reg.md", "prompt_tokens": 8200}
+1. paper-derived template register ./samples/api-design-v1.md -n api-design --out .pd/prompts/reg.md
+   → {"status": "prompt_written", "prompt_file": ".pd/prompts/reg.md", "prompt_tokens": 8200}
 
-2. Agent spawns a subagent that reads prompts/reg.md, executes it with its own LLM,
-   and writes the raw response to responses/reg.json
+2. Agent spawns a subagent that reads .pd/prompts/reg.md, executes it with its own LLM,
+   and writes the raw response to .pd/responses/reg.json
 
-3. paper-derived template register ./samples/api-design-v1.md -n api-design --parse responses/reg.json
+3. paper-derived template register ./samples/api-design-v1.md -n api-design --parse .pd/responses/reg.json
    → {"status": "template_registered", "template_id": "api-design", "sections": 5, ...}
 ```
 
@@ -93,7 +93,7 @@ on-disk checkpoint.
 
 ```bash
 # Execute any --out prompt file directly (replaces subagent execution)
-paper-derived llm exec prompts/reg.md --api-base http://localhost:11434/v1 -m qwen2.5:14b -o responses/reg.json
+paper-derived llm exec .pd/prompts/reg.md --api-base http://localhost:11434/v1 -m qwen2.5:14b -o .pd/responses/reg.json
 
 # Drive the whole section-generation loop (next → prompt → call → parse → summarize)
 paper-derived session run -s $SID --api-base http://localhost:11434/v1 -m qwen2.5:14b \

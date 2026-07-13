@@ -136,6 +136,16 @@ paper-derived gen generate -i <input.json> ... -t <template-id> [-O <output.json
 paper-derived gen validate <doc.json> -t <template-id>
 ```
 
+### `paper-derived doc export`
+
+把 DocumentTree JSON（`.pd/output.json` / `.pd/doc.json`）渲染为最终交付文件（确定性，无需 LLM）。
+
+```bash
+paper-derived doc export .pd/output.json -O <交付文件>.md [-f md|docx|pdf|json]
+```
+
+交付文件写在用户当前目录（或用户指定路径），**不要放进 `.pd/`**。
+
 ## 修订命令
 
 ### `paper-derived revise section`
@@ -273,6 +283,7 @@ paper-derived session delete <session-id>
 
 ## 通用选项
 
+- **工作目录约定**：所有过程文件（prompt/响应/资产/中间树）放 `.pd/` 隐藏目录，当前目录只留最终交付物；交付后 `.pd/` 可整目录删除（详见 SKILL.md「工作目录与交付物纪律」）
 - `--out <file>`（别名 `--prompt-file`）: 构造模式，把 prompt 写入文本文件，stdout 只回摘要（编排必用）
 - `--parse <response-file>`: 解析模式，解析 LLM 响应文件
 - `-O, --output <file>`: 解析产物写入文件（支持的命令上均应使用，避免大 JSON 打 stdout）

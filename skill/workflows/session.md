@@ -19,7 +19,7 @@
 
 1. **主 Agent 绝不执行任何 prompt。** `session prompt` / `session feed` / `session summarize` / `input register` / `gen *` 构造的 prompt，一律下放子代理执行。原因：单个 prompt 受 `--budget` 约束（默认 60000），体积可达数万 token；若在主上下文执行，prompt 正文 + 生成结果双双堆积，十几个 Section 必然超限，且 auto-compact 会把跨节精确状态摘丢。
 2. **prompt 与响应一律走文件，不走 stdout。** 用 `--out` 把 prompt 写入文件，主 Agent 只读到一行路径描述符。
-3. **主 Agent 绝不 `cat`/读取 `prompts/*` 或 `responses/*` 的正文。** 你只读 `--parse` 的状态、`session next`、`session status` 的结果。需要排查失败时，起一个子代理去读并回报要点。
+3. **主 Agent 绝不 `cat`/读取 `.pd/prompts/*` 或 `.pd/responses/*` 的正文。** 你只读 `--parse` 的状态、`session next`、`session status` 的结果。需要排查失败时，起一个子代理去读并回报要点。
 4. **Section 之间的状态全在磁盘（ContextStore + checkpoint），不在你的对话里。**
 
 ## 子代理执行协议（本工作流中执行 prompt 的唯一方式）
@@ -29,8 +29,8 @@
 **① 落盘 prompt（主 Agent 不看内容）**
 
 ```bash
-$PAPER_DERIVED_BIN session prompt -s $SID --section <id> --out prompts/<id>.md
-# stdout 仅摘要：{"status":"prompt_written","prompt_file":"prompts/<id>.md","prompt_tokens":18000}
+$PAPER_DERIVED_BIN session prompt -s $SID --section <id> --out .pd/prompts/<id>.md
+# stdout 仅摘要：{"status":"prompt_written","prompt_file":".pd/prompts/<id>.md","prompt_tokens":18000}
 ```
 
 > prompt 文件是纯文本（`==== SYSTEM ====` / `==== USER ====` 两段，真实换行），子代理 Read 可完整读取，不存在 JSON 单行超长被截断的问题。
@@ -38,13 +38,13 @@ $PAPER_DERIVED_BIN session prompt -s $SID --section <id> --out prompts/<id>.md
 **② 用 Task 工具起子代理执行**（工具权限给 Read/Write/Bash）。交给它的指令：
 
 ```
-读取 prompts/<id>.md：`==== SYSTEM ====` 之后是你的系统指令，`==== USER ====` 之后是任务。
+读取 .pd/prompts/<id>.md：`==== SYSTEM ====` 之后是你的系统指令，`==== USER ====` 之后是任务。
 文件较大时分段 Read（offset/limit），务必读完整。
 严格按二者要求生成本 Section 内容——输出的目标格式已在 prompt 内部定义。
-把完整响应写入 responses/<id>.json，遵守写盘纪律：
+把完整响应写入 .pd/responses/<id>.json，遵守写盘纪律：
 - 该文件已存在时先 rm -f 再写（Write 不能覆盖未读过的已有文件）；
 - 响应超过约 1 万字时禁止一次 Write 全文——先 Write 首段建立文件，
-  剩余部分用 Bash 逐段追加：cat >> responses/<id>.json <<'PD_EOF' ... PD_EOF；
+  剩余部分用 Bash 逐段追加：cat >> .pd/responses/<id>.json <<'PD_EOF' ... PD_EOF；
 - 写完用 wc -c 或读尾部确认完整。
 完成后只回复一行：DONE <id>
 不要把正文输出到对话里。
@@ -55,16 +55,16 @@ $PAPER_DERIVED_BIN session prompt -s $SID --section <id> --out prompts/<id>.md
 **③ 主 Agent 解析（只看状态）**
 
 ```bash
-$PAPER_DERIVED_BIN session prompt -s $SID --section <id> --parse responses/<id>.json
+$PAPER_DERIVED_BIN session prompt -s $SID --section <id> --parse .pd/responses/<id>.json
 # → {"status":"ok","section_id":"<id>","progress":"3/38","all_done":false}
 ```
 
 **④ 摘要（默认执行，见下）** —— 同样走子代理：
 
 ```bash
-$PAPER_DERIVED_BIN session summarize -s $SID --section <id> --out prompts/sum-<id>.md
-# → 子代理读 prompts/sum-<id>.md 执行 → 写 responses/sum-<id>.json → 回 DONE
-$PAPER_DERIVED_BIN session summarize -s $SID --section <id> --parse responses/sum-<id>.json
+$PAPER_DERIVED_BIN session summarize -s $SID --section <id> --out .pd/prompts/sum-<id>.md
+# → 子代理读 .pd/prompts/sum-<id>.md 执行 → 写 .pd/responses/sum-<id>.json → 回 DONE
+$PAPER_DERIVED_BIN session summarize -s $SID --section <id> --parse .pd/responses/sum-<id>.json
 # → {"status":"stored","section_id":"<id>"}
 ```
 
@@ -108,9 +108,9 @@ $PAPER_DERIVED_BIN session init -t <template-id> [--budget 60000]
 
 ```bash
 # 落盘 feed prompt（含各输入的 summary+entities，可能较大）
-$PAPER_DERIVED_BIN session feed -s $SID -i input-1.json -i input-2.json --out prompts/feed.md
-# → 子代理读 prompts/feed.md 执行 → 写 responses/feed.json → 回 DONE
-$PAPER_DERIVED_BIN session feed -s $SID -i input-1.json -i input-2.json --parse responses/feed.json
+$PAPER_DERIVED_BIN session feed -s $SID -i .pd/assets/input-1.json -i .pd/assets/input-2.json --out .pd/prompts/feed.md
+# → 子代理读 .pd/prompts/feed.md 执行 → 写 .pd/responses/feed.json → 回 DONE
+$PAPER_DERIVED_BIN session feed -s $SID -i .pd/assets/input-1.json -i .pd/assets/input-2.json --parse .pd/responses/feed.json
 ```
 
 输出**只有状态报告**：
@@ -150,18 +150,18 @@ $PAPER_DERIVED_BIN session next -s $SID
 
 ### 并行 Section（`parallel_batch`）
 
-各 Section 互不依赖时，**同时起多个子代理**（Claude Code 的 Task 工具支持并发，建议一批 ≤ 8）。先各自 `--out` 落盘 prompt，再并发派发子代理，各写各的 `responses/<id>.json`，最后逐个 `--parse`：
+各 Section 互不依赖时，**同时起多个子代理**（Claude Code 的 Task 工具支持并发，建议一批 ≤ 8）。先各自 `--out` 落盘 prompt，再并发派发子代理，各写各的 `.pd/responses/<id>.json`，最后逐个 `--parse`：
 
 ```bash
 # 1) 落盘各 prompt
 for S in scope overview terminology; do
-  $PAPER_DERIVED_BIN session prompt -s $SID --section $S --out prompts/$S.md
+  $PAPER_DERIVED_BIN session prompt -s $SID --section $S --out .pd/prompts/$S.md
 done
-# 2) 并发起 3 个子代理，分别处理 prompts/scope.md / overview.md / terminology.md
-#    每个子代理只回 DONE，正文写入对应 responses/<id>.json
+# 2) 并发起 3 个子代理，分别处理 .pd/prompts/scope.md / overview.md / terminology.md
+#    每个子代理只回 DONE，正文写入对应 .pd/responses/<id>.json
 # 3) 逐个解析（只看状态）
 for S in scope overview terminology; do
-  $PAPER_DERIVED_BIN session prompt -s $SID --section $S --parse responses/$S.json
+  $PAPER_DERIVED_BIN session prompt -s $SID --section $S --parse .pd/responses/$S.json
 done
 ```
 
@@ -201,7 +201,7 @@ $PAPER_DERIVED_BIN session status -s $SID     # 查看状态
 $PAPER_DERIVED_BIN session next -s $SID        # 自动跳过 done，重置卡住的 generating → ready
 ```
 
-因为 prompt/响应都在 `prompts/`、`responses/` 落盘，主上下文即使被清空（`/clear`）也不影响续传——重开会话后凭 `$SID` 继续即可。
+因为 prompt/响应都在 `.pd/prompts/`、`.pd/responses/` 落盘，主上下文即使被清空（`/clear`）也不影响续传——重开会话后凭 `$SID` 继续即可。
 
 ## 搜索上下文库
 
@@ -235,14 +235,14 @@ SID="sess_abc123"
 
 # 1. 初始化
 $PAPER_DERIVED_BIN session init -t srs            # → 记录 $SID
-mkdir -p prompts responses
+mkdir -p .pd/prompts .pd/responses .pd/assets
 
 # 2. 注册输入（每份都：--out 落盘 → 子代理执行 → --parse；大文档加 --chunk-size --slim）
 
 # 3. 喂入
-$PAPER_DERIVED_BIN session feed -s $SID -i requirements.json -i api-spec.json --out prompts/feed.md
-#   → 子代理执行 prompts/feed.md → 写 responses/feed.json → DONE
-$PAPER_DERIVED_BIN session feed -s $SID -i requirements.json -i api-spec.json --parse responses/feed.json
+$PAPER_DERIVED_BIN session feed -s $SID -i requirements.json -i api-spec.json --out .pd/prompts/feed.md
+#   → 子代理执行 .pd/prompts/feed.md → 写 .pd/responses/feed.json → DONE
+$PAPER_DERIVED_BIN session feed -s $SID -i requirements.json -i api-spec.json --parse .pd/responses/feed.json
 
 # 4. 循环生成（主 Agent 只发命令、收 DONE、看状态）
 while true; do
@@ -252,10 +252,10 @@ while true; do
     generate)
       # 单节：取 section_id；并行：取 parallel_batch[]
       # 对每个 <id>：
-      #   $BIN session prompt -s $SID --section <id> --out prompts/<id>.md
-      #   → 起子代理执行 prompts/<id>.md → 写 responses/<id>.json → DONE
-      #   $BIN session prompt -s $SID --section <id> --parse responses/<id>.json
-      #   $BIN session summarize -s $SID --section <id> --out prompts/sum-<id>.md → 子代理 → --parse
+      #   $BIN session prompt -s $SID --section <id> --out .pd/prompts/<id>.md
+      #   → 起子代理执行 .pd/prompts/<id>.md → 写 .pd/responses/<id>.json → DONE
+      #   $BIN session prompt -s $SID --section <id> --parse .pd/responses/<id>.json
+      #   $BIN session summarize -s $SID --section <id> --out .pd/prompts/sum-<id>.md → 子代理 → --parse
       ;;
     assemble)  break ;;
     feed_more) echo "告知用户需要补充输入"; ;;
