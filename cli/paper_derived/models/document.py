@@ -2,8 +2,51 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from uuid import uuid4
+
+_HEADING_RE = re.compile(r"^#{1,6}\s+(.+?)\s*$")
+_NUM_PREFIX_RE = re.compile(r"^[0-9]+(?:\.[0-9]+)*[.、]?\s*")
+
+
+def _heading_text(line: str) -> str | None:
+    """若该行是 markdown 标题，返回去掉 # 与章节编号后的标题文本；否则 None."""
+    m = _HEADING_RE.match(line.strip())
+    if not m:
+        return None
+    return _NUM_PREFIX_RE.sub("", m.group(1)).strip()
+
+
+def sanitize_section_content(
+    content: str, titles: list[str], child_titles: list[str]
+) -> str:
+    """清除 LLM 塞进 content 的重复标题（父子章节重复输出 bug 的确定性防线）.
+
+    规则：
+    1. 正文开始前出现的、与本节标题相同的标题行（含 "1 范围" 这类编号变体）→ 删除该行。
+       节标题由渲染器统一输出，content 里不该再有一份。
+    2. 与任一**直接子节点**标题相同的标题行 → 从该行起截断全部剩余内容。
+       子章节由系统单独生成，其后的内容必然是子树的重复。
+    """
+    if not content:
+        return content
+    title_set = {t.strip() for t in titles if t and t.strip()}
+    child_set = {t.strip() for t in child_titles if t and t.strip()}
+
+    out: list[str] = []
+    body_started = False
+    for line in content.splitlines():
+        heading = _heading_text(line)
+        if heading is not None:
+            if heading in child_set:
+                break
+            if heading in title_set and not body_started:
+                continue
+        if line.strip():
+            body_started = True
+        out.append(line)
+    return "\n".join(out).strip()
 
 
 @dataclass
@@ -247,6 +290,16 @@ class DocumentTree:
 
         walk(self.sections)
         return result
+
+    def sanitize_headings(self) -> None:
+        """递归清除各节点 content 中重复的自身/子节点标题（见 sanitize_section_content）."""
+        def walk(secs: list[Section]) -> None:
+            for sec in secs:
+                sec.content = sanitize_section_content(
+                    sec.content, [sec.title], [c.title for c in sec.children]
+                )
+                walk(sec.children)
+        walk(self.sections)
 
     def update_section(self, section_id: str, new_section: Section) -> bool:
         """更新指定 ID 的 Section 内容，保留原有子节点，返回是否找到.

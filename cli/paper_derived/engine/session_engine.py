@@ -357,6 +357,16 @@ def build_section_prompt(
         f"## 目标 Section\nID: {section_id}\n标题: {section_title}",
     ]
 
+    # 父章节容器：子章节由系统单独生成，本节只写自身正文
+    if section is not None and section.children:
+        child_list = "\n".join(f"- {c.title} ({c.id})" for c in section.children)
+        user_parts.append(
+            "## 本节的子章节（系统将单独生成，禁止在本节内容中包含）\n"
+            + child_list
+            + "\n\n本节 content 只写本节自身的引言/概述正文；"
+              "不要输出任何子章节的标题或内容，不要输出任何 markdown 标题行。"
+        )
+
     # 添加 assembled 上下文
     prompt_text = assembled.to_prompt_text()
     if prompt_text:
@@ -398,6 +408,13 @@ def parse_section_result(
 
     result = extract_json(llm_response)
     new_section = Section.from_dict(result)
+
+    # 清除 content 中重复的自身标题 / 子节点子树内容（父子章节重复输出防线）
+    skeleton = doc.find_section(section_id) if doc is not None else None
+    titles = [new_section.title] + ([skeleton.title] if skeleton else [])
+    child_titles = [c.title for c in skeleton.children] if skeleton else []
+    from paper_derived.models.document import sanitize_section_content
+    new_section.content = sanitize_section_content(new_section.content, titles, child_titles)
 
     # 更新 DocumentTree
     if doc is not None:

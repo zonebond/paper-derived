@@ -226,6 +226,7 @@ def parse_generate_result(
 
     result = extract_json(llm_response)
     doc = DocumentTree.from_dict(result)
+    doc.sanitize_headings()
     doc.document_id = doc.document_id or make_document_id()
     doc.template_id = template_id
     doc.input_ids = [a.id for a in input_assets]
@@ -327,6 +328,7 @@ def parse_batch_generate_result(
 
     result = extract_json(llm_response)
     doc = DocumentTree.from_dict(result)
+    doc.sanitize_headings()
     doc.document_id = doc.document_id or make_document_id()
     doc.template_id = template_id
     doc.input_ids = [a.id for a in input_assets]
