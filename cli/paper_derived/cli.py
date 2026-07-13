@@ -196,16 +196,25 @@ def template_register(sample, name, description, parse, prompt_file):
             }, ensure_ascii=False))
             raise SystemExit(1)
 
-        result = parse_register_template_result(llm_response, name, description)
+        sample_text, _, _ = _read_input_file(sample)
+        result = parse_register_template_result(llm_response, name, description, sample_text=sample_text)
         # 模板已由 parse_register_template_result 存入 storage；stdout 只报摘要，
         # 完整定义用 `template show <id>` 查看，避免整个模板 JSON 灌进 Agent 上下文
-        click.echo(json.dumps({
+        summary = {
             "status": "template_registered",
             "template_id": result.id,
             "name": result.name,
             "sections": len(result.section_ids),
             "section_ids": result.section_ids,
-        }, ensure_ascii=False))
+        }
+        auto_added = getattr(result, "auto_added_sections", [])
+        if auto_added:
+            summary["auto_added_sections"] = auto_added
+            summary["warning"] = (
+                f"LLM 遗漏了 {len(auto_added)} 个一级章节，已按结构预扫描锚点自动补回骨架"
+                "（dependency 默认 self_contained，可用 template show 检查后手动调整）"
+            )
+        click.echo(json.dumps(summary, ensure_ascii=False))
     else:
         sample_text, _, _ = _read_input_file(sample)
         sys_prompt, user_msg = build_register_template_prompt(sample_text, name, description)
