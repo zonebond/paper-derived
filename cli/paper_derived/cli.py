@@ -40,7 +40,7 @@ def version_cmd():
 
     info = get_version_info()
     info["compact_prompts"] = (PROMPTS_DIR / "compact").is_dir()
-    info["capabilities"] = ["out-text-prompt", "parse-output-file", "session-run", "llm-exec", "compact-prompts"]
+    info["capabilities"] = ["out-text-prompt", "parse-output-file", "session-run", "llm-exec", "compact-prompts", "doc-export", "pd-workdir"]
     click.echo(json.dumps(info, ensure_ascii=False))
 
 
@@ -585,6 +585,29 @@ def gen_validate(doc, template, parse, prompt_file):
     else:
         sys_prompt, user_msg = build_validate_prompt(doc_tree, template)
         _output_prompt(sys_prompt, user_msg, prompt_file=prompt_file)
+
+
+# ── Doc commands ───────────────────────────────────────────────
+
+
+@main.group()
+def doc():
+    """文档树操作（确定性，无需 LLM）."""
+
+
+@doc.command("export")
+@click.argument("doc_file", type=click.Path(exists=True))
+@click.option("--output", "-O", required=True, help="交付文件路径（建议写在项目根，不要放 .pd/ 里）")
+@click.option("--format", "-f", "output_format", default=None,
+              help="输出格式: md|docx|pdf|json（默认从扩展名推断）")
+def doc_export(doc_file, output, output_format):
+    """把 DocumentTree JSON（.pd/output.json / .pd/doc.json）渲染为交付文件。"""
+    from paper_derived.models.document import DocumentTree
+    from paper_derived.format_writer import write_document
+
+    tree = DocumentTree.from_dict(json.loads(Path(doc_file).read_text(encoding="utf-8")))
+    out_path = write_document(tree, output, fmt=output_format)
+    click.echo(json.dumps({"status": "exported", "output": str(out_path)}, ensure_ascii=False))
 
 
 # ── Revise commands ────────────────────────────────────────────

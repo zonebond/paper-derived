@@ -19,22 +19,22 @@
 本工作流每一步都是「引擎构造 prompt → LLM 执行 → 引擎解析」。**执行 prompt 的 LLM 必须是子代理，不是你（主编排上下文）。** 违反此原则，几份大资料 + 一次整档生成就能撑爆上下文。规则：
 
 1. **主 Agent 绝不亲自执行引擎输出的 prompt**——用 Task 工具起子代理（权限给 Read/Write/Bash）。
-2. **prompt 用 `--out` 落盘到 `prompts/`**；子代理把响应写入 `responses/`；主 Agent 只对响应文件 `--parse` 并读**状态**。解析产物大的命令（`input register`、`gen extract`、`gen generate`）一律加 `-O <file>` 落盘。
+2. **prompt 用 `--out` 落盘到 `.pd/prompts/`**；子代理把响应写入 `.pd/responses/`；主 Agent 只对响应文件 `--parse` 并读**状态**。解析产物大的命令（`input register`、`gen extract`、`gen generate`）一律加 `-O <file>` 落盘。
 3. **主 Agent 绝不读取 prompt 文件、响应文件、输入资产原文的正文内容。**
 
 ### 子代理执行协议（本文件通用，凡「执行 prompt」处均套用）
 
 ```bash
-$PAPER_DERIVED_BIN <cmd> <args> --out prompts/<key>.md       # ① 落盘 prompt（文本格式）
-# ② 起子代理：读 prompts/<key>.md（==== SYSTEM ==== 之后是系统指令，==== USER ==== 之后是任务），
-#    严格按其要求生成，把完整响应写入 responses/<key>.json（遵守 SKILL.md「响应写盘纪律」：
+$PAPER_DERIVED_BIN <cmd> <args> --out .pd/prompts/<key>.md       # ① 落盘 prompt（文本格式）
+# ② 起子代理：读 .pd/prompts/<key>.md（==== SYSTEM ==== 之后是系统指令，==== USER ==== 之后是任务），
+#    严格按其要求生成，把完整响应写入 .pd/responses/<key>.json（遵守 SKILL.md「响应写盘纪律」：
 #    已存在先 rm -f；超长响应先 Write 首段再 Bash 逐段追加），只回 DONE <key>，不输出正文到对话
-$PAPER_DERIVED_BIN <cmd> <args> --parse responses/<key>.json # ③ 主 Agent 只看返回状态
+$PAPER_DERIVED_BIN <cmd> <args> --parse .pd/responses/<key>.json # ③ 主 Agent 只看返回状态
 ```
 
 > 尤其注意 `gen generate` 全量模式：整档 DocumentTree 响应极易超过子代理单条回复的输出上限，一次 Write 必被截断（`InputValidationError: content missing`）。要么让子代理分段追加写入，要么直接改用下方「分批生成」把单次响应做小——**大模板优先选分批**。
 
-准备工作目录：`mkdir -p prompts responses`
+准备工作目录：`mkdir -p .pd/prompts .pd/responses .pd/assets`
 
 ## Step 0: 识别意图
 
@@ -54,14 +54,14 @@ $PAPER_DERIVED_BIN template list --json
 
 ```bash
 # ① 落盘注册 prompt
-$PAPER_DERIVED_BIN input register <file> -n <name> --out prompts/reg-<name>.md
-# ② 子代理读 prompts/reg-<name>.md 执行 → 写 responses/reg-<name>.json → DONE
+$PAPER_DERIVED_BIN input register <file> -n <name> --out .pd/prompts/reg-<name>.md
+# ② 子代理读 .pd/prompts/reg-<name>.md 执行 → 写 .pd/responses/reg-<name>.json → DONE
 # ③ 解析并落盘 InputAsset（-O 必加：stdout 只回状态摘要，资产 JSON 不进主上下文）
-$PAPER_DERIVED_BIN input register <file> -n <name> --parse responses/reg-<name>.json --slim -O input-<name>.json
-# → {"status":"asset_written","asset_file":"input-<name>.json","entities":42,...}
+$PAPER_DERIVED_BIN input register <file> -n <name> --parse .pd/responses/reg-<name>.json --slim -O .pd/assets/input-<name>.json
+# → {"status":"asset_written","asset_file":".pd/assets/input-<name>.json","entities":42,...}
 ```
 
-产物：包含 `summary` + `entities` 的 InputAsset JSON 文件（`input-<name>.json`）。所有输入注册完得到一个 JSON 文件列表（主 Agent 只需记住路径，不读内容）。
+产物：包含 `summary` + `entities` 的 InputAsset JSON 文件（`.pd/assets/input-<name>.json`）。所有输入注册完得到一个 JSON 文件列表（主 Agent 只需记住路径，不读内容）。
 
 > 用户直接贴文本（无文件路径）时，先写入临时文件，再走同样流程。
 
@@ -70,22 +70,22 @@ $PAPER_DERIVED_BIN input register <file> -n <name> --parse responses/reg-<name>.
 超大文档（超上下文窗口）用 `--chunk-size` 指定分块：
 
 ```bash
-$PAPER_DERIVED_BIN input register <file> -n <name> --chunk-size 30000 --out prompts/reg-<name>.md
+$PAPER_DERIVED_BIN input register <file> -n <name> --chunk-size 30000 --out .pd/prompts/reg-<name>.md
 ```
 
-`--out` 模式下引擎**自动把每块写成独立文件** `prompts/reg-<name>.chunk-<i>.md`，stdout 只回：
+`--out` 模式下引擎**自动把每块写成独立文件** `.pd/prompts/reg-<name>.chunk-<i>.md`，stdout 只回：
 `{"status":"prompts_written","mode":"chunked","total_chunks":4,"prompt_files":[...],"total_prompt_tokens":...}`。
 
 **编排（关键：每块一个子代理，可并行）：**
 1. 主 Agent 只看 stdout 摘要里的 `prompt_files` 列表，**不读任何分块文件的内容**（每块含 30000 字符原文）。
-2. **并发**起 N 个子代理，第 i 个读 `prompts/reg-<name>.chunk-<i>.md` 执行 → 写 `responses/reg-<name>-chunk-<i>.json` → DONE。
+2. **并发**起 N 个子代理，第 i 个读 `.pd/prompts/reg-<name>.chunk-<i>.md` 执行 → 写 `.pd/responses/reg-<name>-chunk-<i>.json` → DONE。
 3. 合并（`--slim` 省略 raw_content；`-O` 落盘，主上下文只收状态摘要）：
 
 ```bash
 $PAPER_DERIVED_BIN input register <file> -n <name> \
-  --parse-chunks responses/reg-<name>-chunk-0.json \
-  --parse-chunks responses/reg-<name>-chunk-1.json \
-  --parse-chunks responses/reg-<name>-chunk-2.json --slim -O input-<name>.json
+  --parse-chunks .pd/responses/reg-<name>-chunk-0.json \
+  --parse-chunks .pd/responses/reg-<name>-chunk-1.json \
+  --parse-chunks .pd/responses/reg-<name>-chunk-2.json --slim -O .pd/assets/input-<name>.json
 ```
 
 合并策略：summary 分号拼接；entities 按 `(kind,name)` 去重保留最详版本；raw_content 保留完整原文（但 `--slim` 会在产出 JSON 里置空）。
@@ -99,9 +99,9 @@ $PAPER_DERIVED_BIN input register <file> -n <name> \
 ## Step 3: 资料体检（走子代理）
 
 ```bash
-$PAPER_DERIVED_BIN gen preflight -i input-1.json -i input-2.json -t <template-id> --out prompts/preflight.md
-# → 子代理执行 → responses/preflight.json
-$PAPER_DERIVED_BIN gen preflight -i input-1.json -i input-2.json -t <template-id> --parse responses/preflight.json
+$PAPER_DERIVED_BIN gen preflight -i .pd/assets/input-1.json -i .pd/assets/input-2.json -t <template-id> --out .pd/prompts/preflight.md
+# → 子代理执行 → .pd/responses/preflight.json
+$PAPER_DERIVED_BIN gen preflight -i .pd/assets/input-1.json -i .pd/assets/input-2.json -t <template-id> --parse .pd/responses/preflight.json
 ```
 
 **决策**：全 `ok` → 继续；有 `warning` → 告知用户可能影响质量，让其决定；有 `critical` → 必须告知并等补充。
@@ -109,9 +109,9 @@ $PAPER_DERIVED_BIN gen preflight -i input-1.json -i input-2.json -t <template-id
 ## Step 4: 实体抽取（走子代理，可选但推荐）
 
 ```bash
-$PAPER_DERIVED_BIN gen extract -i input-1.json -i input-2.json -t <template-id> --out prompts/extract.md
-# → 子代理执行 → responses/extract.json
-$PAPER_DERIVED_BIN gen extract -i input-1.json -i input-2.json -t <template-id> --parse responses/extract.json -O extract-result.json
+$PAPER_DERIVED_BIN gen extract -i .pd/assets/input-1.json -i .pd/assets/input-2.json -t <template-id> --out .pd/prompts/extract.md
+# → 子代理执行 → .pd/responses/extract.json
+$PAPER_DERIVED_BIN gen extract -i .pd/assets/input-1.json -i .pd/assets/input-2.json -t <template-id> --parse .pd/responses/extract.json -O .pd/extract-result.json
 ```
 
 向用户展示**摘要**（如「识别到 X 个接口、Y 个字段、Z 个认证方案」）。用户可确认或修正；有修正则保存为 `--overrides` 传给 Step 5。
@@ -119,13 +119,13 @@ $PAPER_DERIVED_BIN gen extract -i input-1.json -i input-2.json -t <template-id> 
 ## Step 5: 生成文档（走子代理）
 
 ```bash
-$PAPER_DERIVED_BIN gen generate -i input-1.json -i input-2.json -t <template-id> --out prompts/gen.md
-# → 子代理读 prompts/gen.md 执行 → 写 responses/gen.json → DONE
-$PAPER_DERIVED_BIN gen generate -i input-1.json -i input-2.json -t <template-id> --parse responses/gen.json -O output.json
+$PAPER_DERIVED_BIN gen generate -i .pd/assets/input-1.json -i .pd/assets/input-2.json -t <template-id> --out .pd/prompts/gen.md
+# → 子代理读 .pd/prompts/gen.md 执行 → 写 .pd/responses/gen.json → DONE
+$PAPER_DERIVED_BIN gen generate -i .pd/assets/input-1.json -i .pd/assets/input-2.json -t <template-id> --parse .pd/responses/gen.json -O .pd/output.json
 # 有 Step 4 修正时追加：--overrides corrected-extract.json
 ```
 
-得到 DocumentTree 存 `output.json`（主 Agent 不读其正文，只看 `--parse` 状态）。
+得到 DocumentTree 存 `.pd/output.json`（主 Agent 不读其正文，只看 `--parse` 状态）。
 
 ### 大模板分批生成（Section > 20，如 SRS 38 节）
 
@@ -133,19 +133,19 @@ $PAPER_DERIVED_BIN gen generate -i input-1.json -i input-2.json -t <template-id>
 
 1. **生成大纲**（确定性，无需 LLM/子代理）：
    ```bash
-   $PAPER_DERIVED_BIN gen outline -t <template-id> -O doc.json
+   $PAPER_DERIVED_BIN gen outline -t <template-id> -O .pd/doc.json
    ```
-2. **实体抽取**（走子代理，见 Step 4），保存 `extract-result.json`。
-3. **分批填充**：每批 4–8 个 Section，`--sections` 选章、`--extract` 选相关实体、`--into` 合并回主文档。**批次间必须串行**（都读写 `doc.json`，并行会互相覆盖）：
+2. **实体抽取**（走子代理，见 Step 4），保存 `.pd/extract-result.json`。
+3. **分批填充**：每批 4–8 个 Section，`--sections` 选章、`--extract` 选相关实体、`--into` 合并回主文档。**批次间必须串行**（都读写 `.pd/doc.json`，并行会互相覆盖）：
    ```bash
    # 批次 1
-   $PAPER_DERIVED_BIN gen generate -i input-1.json -i input-2.json -t <template-id> \
+   $PAPER_DERIVED_BIN gen generate -i .pd/assets/input-1.json -i .pd/assets/input-2.json -t <template-id> \
      --sections scope,identification,referenced-documents \
-     --extract extract-result.json --into doc.json --out prompts/batch-1.md
-   # → 子代理执行 prompts/batch-1.md → responses/batch-1.json → DONE
-   $PAPER_DERIVED_BIN gen generate -i input-1.json -i input-2.json -t <template-id> \
+     --extract .pd/extract-result.json --into .pd/doc.json --out .pd/prompts/batch-1.md
+   # → 子代理执行 .pd/prompts/batch-1.md → .pd/responses/batch-1.json → DONE
+   $PAPER_DERIVED_BIN gen generate -i .pd/assets/input-1.json -i .pd/assets/input-2.json -t <template-id> \
      --sections scope,identification,referenced-documents \
-     --extract extract-result.json --into doc.json -O doc.json --parse responses/batch-1.json
+     --extract .pd/extract-result.json --into .pd/doc.json -O .pd/doc.json --parse .pd/responses/batch-1.json
    # 批次 2、3… 重复，串行
    ```
 
@@ -167,9 +167,9 @@ $PAPER_DERIVED_BIN gen generate -i input-1.json -i input-2.json -t <template-id>
 ## Step 6: 质检（走子代理）
 
 ```bash
-$PAPER_DERIVED_BIN gen validate output.json -t <template-id> --out prompts/validate.md
-# → 子代理执行 → responses/validate.json
-$PAPER_DERIVED_BIN gen validate output.json -t <template-id> --parse responses/validate.json
+$PAPER_DERIVED_BIN gen validate .pd/output.json -t <template-id> --out .pd/prompts/validate.md
+# → 子代理执行 → .pd/responses/validate.json
+$PAPER_DERIVED_BIN gen validate .pd/output.json -t <template-id> --parse .pd/responses/validate.json
 ```
 
 **决策**：
@@ -179,4 +179,4 @@ $PAPER_DERIVED_BIN gen validate output.json -t <template-id> --parse responses/v
 
 ## Step 7: 交付
 
-文档在 `output.json`。把 Markdown 渲染给用户预览，并说明：各 Section 状态（generated/placeholder）、需注意的 hints、可随时要求局部或全局修改。
+文档树在 `.pd/output.json`。把 Markdown 渲染给用户预览，并说明：各 Section 状态（generated/placeholder）、需注意的 hints、可随时要求局部或全局修改。
