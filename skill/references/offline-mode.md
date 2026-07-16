@@ -40,6 +40,23 @@ paper-derived gen run -t <template-id> -i 资料1.docx -i 资料2.md \
 4. 结束时输出确定性**结构审计**（`run_finished` 事件的 `audit` 字段）：对照模板
    逐一核对节点存在且非空，`complete: true` 才算达标
 
+## 在 CLI Agent 环境内直驱（无需任何 API）
+
+在 Claude Code 等已登录 `claude` CLI 的环境里，`--api-base claude-cli` 让引擎通过
+`claude -p`（headless 单次调用）执行每个 prompt——不需要 API 地址、不需要 key，
+子进程直接继承本机认证（订阅或 API 均可）：
+
+```bash
+paper-derived session run -s $SID --api-base claude-cli -m sonnet -O output.md
+paper-derived gen run -t <tid> -i 资料.docx --api-base claude-cli -m haiku -O output.md
+paper-derived llm exec .pd/prompts/feed.md --api-base claude-cli -o .pd/responses/feed.json
+```
+
+- `-m` 可用 `sonnet` / `haiku` / `opus` 别名，留空用 claude CLI 默认模型
+- 每次调用是独立的无状态 headless 会话，与 OpenAI 客户端语义一致，
+  修复重试/占位兜底/审计全套照常生效
+- 对比子代理编排：42 节大模板不再依赖 Agent 逐节派发纪律，也没有子代理超时问题
+
 ## 分步流水线（需要细粒度控制时）
 
 ```bash

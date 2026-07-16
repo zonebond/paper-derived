@@ -283,6 +283,7 @@ paper-derived session run -s <session-id> --api-base <url> -m <model> \
 ```
 
 - `--api-base` / `-m, --model` / `--api-key`：Provider 连接（可用环境变量 `PAPER_DERIVED_API_BASE` / `PAPER_DERIVED_MODEL` / `PAPER_DERIVED_API_KEY`）
+- `--api-base claude-cli`：借用本机已登录的 claude CLI（headless），无需 API 地址和 key；`-m` 可用 sonnet/haiku/opus
 - `--window`：Provider 上下文窗口，自动收缩预算 budget = min(现值, window/2)
 - `--compact`：用精简版内置 prompt（输出契约不变；小模型推荐）
 - `--max-sections`：本次最多生成 N 节后停（人工分段审查）
