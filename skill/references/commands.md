@@ -45,6 +45,14 @@ paper-derived template register <sample-file> -n <name> [-d <description>] [--ou
 构造模式：`--out` 写 prompt 文本文件（不加则全量打 stdout）。
 解析模式：加 `--parse <response-file>` 解析 LLM 响应并存储模板，stdout 只回注册摘要（template_id、section 数）。
 
+### `paper-derived template register-auto`
+
+小模型友好的模板注册（直驱）：章节树由引擎确定性扫描，LLM 只写 3 段小文本。~30B 级模型可稳定完成。
+
+```bash
+paper-derived template register-auto <sample> -n <name> --api-base <url> -m <model> [--window <tokens>] [--compact]
+```
+
 ### `paper-derived template list`
 
 列出所有已注册模板。
@@ -128,6 +136,15 @@ paper-derived gen generate -i <input.json> ... -t <template-id> [-O <output.json
 - `--extract`: 抽取结果 JSON，用于筛选实体
 - `--into`: 已有文档树路径，分批生成时合并
 
+### `paper-derived gen run`
+
+一条龙直驱生成：原始资料 → 分块注册 → feed → 逐节生成 → 组装交付。断点续传：重跑同一条命令即继续。
+
+```bash
+paper-derived gen run -t <template-id> -i <原始资料> [-i ...] --api-base <url> -m <model> \
+  [--window <tokens>] [--compact] [--workdir .pd] [--max-sections N] [-O <交付文件>] [-f <format>]
+```
+
 ### `paper-derived gen validate`
 
 质检：校验生成的文档。
@@ -135,6 +152,17 @@ paper-derived gen generate -i <input.json> ... -t <template-id> [-O <output.json
 ```bash
 paper-derived gen validate <doc.json> -t <template-id>
 ```
+
+### `paper-derived doc sanitize`
+
+净化已有 DocumentTree：清除各节 content 中的 markdown 标题行（层级错乱/硬编码编号/多余子结构/重复标题的修复工具，确定性、无需 LLM、无需重新生成）。
+
+```bash
+paper-derived doc sanitize .pd/output.json            # 原地净化
+paper-derived doc sanitize old.json -O fixed.json      # 另存
+```
+
+规则：与本节标题重复的标题行删除；与直接子节标题重复的标题行起截断（子树重复）；其余自创标题降级为加粗小标题并剥掉编号；代码块内不动。净化后用 `doc export` 重新渲染交付文件。
 
 ### `paper-derived doc export`
 

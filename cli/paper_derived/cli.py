@@ -40,7 +40,7 @@ def version_cmd():
 
     info = get_version_info()
     info["compact_prompts"] = (PROMPTS_DIR / "compact").is_dir()
-    info["capabilities"] = ["out-text-prompt", "parse-output-file", "session-run", "llm-exec", "compact-prompts", "doc-export", "pd-workdir"]
+    info["capabilities"] = ["out-text-prompt", "parse-output-file", "session-run", "llm-exec", "compact-prompts", "doc-export", "doc-sanitize", "pd-workdir", "template-register-auto", "gen-run"]
     click.echo(json.dumps(info, ensure_ascii=False))
 
 
@@ -141,6 +141,29 @@ def _output_asset(result, output: str | None, asset_name: str, slim: bool) -> No
         _output_json(result)
 
 
+def _llm_client_options(f):
+    """直驱模式的 provider 连接选项（session run / llm exec 共用）."""
+    f = click.option("--api-base", required=True, envvar="PAPER_DERIVED_API_BASE",
+                     help="OpenAI 兼容 API 地址，如 http://localhost:11434/v1（Ollama）")(f)
+    f = click.option("--model", "-m", required=True, envvar="PAPER_DERIVED_MODEL",
+                     help="模型名，如 qwen2.5:14b")(f)
+    f = click.option("--api-key", default="", envvar="PAPER_DERIVED_API_KEY",
+                     help="API Key（本地 provider 通常不需要）")(f)
+    f = click.option("--temperature", default=0.2, type=float, help="采样温度（默认 0.2）")(f)
+    f = click.option("--max-output", default=4096, type=int,
+                     help="单次调用的最大输出 token（默认 4096）")(f)
+    f = click.option("--timeout", default=600.0, type=float, help="单次调用超时秒数")(f)
+    return f
+
+
+def _make_client(api_base, model, api_key, temperature, max_output, timeout):
+    from paper_derived.llm import LLMClient
+    return LLMClient(
+        api_base=api_base, model=model, api_key=api_key,
+        temperature=temperature, max_output_tokens=max_output, timeout=timeout,
+    )
+
+
 # ── Template commands ──────────────────────────────────────────
 
 
@@ -219,6 +242,48 @@ def template_register(sample, name, description, parse, prompt_file):
         sample_text, _, _ = _read_input_file(sample)
         sys_prompt, user_msg = build_register_template_prompt(sample_text, name, description)
         _output_prompt(sys_prompt, user_msg, prompt_file=prompt_file)
+
+
+@template.command("register-auto")
+@click.argument("sample", type=click.Path(exists=True))
+@click.option("--name", "-n", required=True, help="模板名称")
+@click.option("--description", "-d", default="", help="模板描述")
+@_llm_client_options
+@click.option("--window", default=0, type=int, help="Provider 上下文窗口（token），控制样例节选长度")
+@click.option("--compact", is_flag=True, default=False, help="使用精简版内置 prompt")
+def template_register_auto(sample, name, description, api_base, model, api_key,
+                           temperature, max_output, timeout, window, compact):
+    """小模型友好的模板注册（直驱）：结构确定性扫描，LLM 只写三段小文本。
+
+    章节树由引擎从样例的编号/markdown 标题确定性构建（不让 LLM 输出大 JSON），
+    structure 模块确定性渲染；LLM 仅执行 3 次纯文本小调用（抽取/风格/校验指令）。
+    ~30B 级模型可稳定完成。
+    """
+    from paper_derived.runner import register_template_auto, PipelineError
+
+    if compact:
+        from paper_derived.engine._paths import set_compact
+        set_compact(True)
+
+    sample_text, _, _ = _read_input_file(sample)
+    client = _make_client(api_base, model, api_key, temperature, max_output, timeout)
+
+    def on_event(ev: dict) -> None:
+        click.echo(json.dumps(ev, ensure_ascii=False))
+
+    try:
+        tpl = register_template_auto(sample_text, name, description, client,
+                                     window=window, on_event=on_event)
+    except PipelineError as e:
+        click.echo(json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False))
+        raise SystemExit(1)
+    click.echo(json.dumps({
+        "status": "template_registered",
+        "template_id": tpl.id,
+        "sections": len(tpl.section_ids),
+        "section_ids": tpl.section_ids,
+        "structure_source": "deterministic-scan",
+    }, ensure_ascii=False))
 
 
 @template.command("list")
@@ -595,6 +660,32 @@ def doc():
     """文档树操作（确定性，无需 LLM）."""
 
 
+@doc.command("sanitize")
+@click.argument("doc_file", type=click.Path(exists=True))
+@click.option("--output", "-O", default=None, type=click.Path(),
+              help="净化后写入路径（默认原地覆盖）")
+def doc_sanitize(doc_file, output):
+    """净化已有 DocumentTree：清除各节 content 中的 markdown 标题行。
+
+    修复历史生成结果的结构污染（层级错乱/硬编码编号/多余子结构/重复标题），
+    无需重新生成。规则同引擎解析路径：重复标题删除、子节子树截断、
+    自创子结构降级为加粗小标题。之后可用 doc export 重新渲染交付文件。
+    """
+    from paper_derived.models.document import DocumentTree
+
+    tree = DocumentTree.from_dict(json.loads(Path(doc_file).read_text(encoding="utf-8")))
+    before = json.dumps(tree.to_dict(), ensure_ascii=False)
+    tree.sanitize_headings()
+    after_dict = tree.to_dict()
+    out_path = output or doc_file
+    _write_result_json(after_dict, out_path)
+    click.echo(json.dumps({
+        "status": "sanitized",
+        "output": str(out_path),
+        "changed": json.dumps(after_dict, ensure_ascii=False) != before,
+    }, ensure_ascii=False))
+
+
 @doc.command("export")
 @click.argument("doc_file", type=click.Path(exists=True))
 @click.option("--output", "-O", required=True, help="交付文件路径（建议写在项目根，不要放 .pd/ 里）")
@@ -608,6 +699,55 @@ def doc_export(doc_file, output, output_format):
     tree = DocumentTree.from_dict(json.loads(Path(doc_file).read_text(encoding="utf-8")))
     out_path = write_document(tree, output, fmt=output_format)
     click.echo(json.dumps({"status": "exported", "output": str(out_path)}, ensure_ascii=False))
+
+
+@gen.command("run")
+@click.option("--template", "-t", required=True, help="模板 ID")
+@click.option("--inputs", "-i", "input_files", required=True, multiple=True,
+              type=click.Path(exists=True), help="原始输入资料（可多个，非 InputAsset JSON）")
+@_llm_client_options
+@click.option("--window", default=0, type=int,
+              help="Provider 上下文窗口（token）。自动推导 chunk 大小与 session 预算")
+@click.option("--compact", is_flag=True, default=False, help="使用精简版内置 prompt（小模型推荐）")
+@click.option("--workdir", default=".pd", type=click.Path(), help="过程文件目录（默认 .pd）")
+@click.option("--max-sections", default=0, type=int, help="本次最多生成的 Section 数（0=不限）")
+@click.option("--no-summarize", "no_summarize", is_flag=True, default=False)
+@click.option("--max-attempts", default=3, type=int, help="每步最大尝试次数（含格式修复重试）")
+@click.option("--output", "-O", default="", help="交付文件路径（如 output.md / output.docx）")
+@click.option("--format", "-f", "output_format", default=None, help="输出格式: md|docx|pdf|json")
+def gen_run(template, input_files, api_base, model, api_key, temperature, max_output,
+            timeout, window, compact, workdir, max_sections, no_summarize,
+            max_attempts, output, output_format):
+    """一条龙直驱生成：原始资料 → 注册（自动分块）→ feed → 逐节生成 → 组装交付。
+
+    全程引擎调 Provider，零 Agent 编排；~30B 级模型可稳定完成。
+    可断点续传：已注册资产跳过，session 进度由 checkpoint 托管，
+    中断后重跑同一条命令即继续。
+    """
+    from paper_derived.runner import run_pipeline, PipelineError
+
+    if compact:
+        from paper_derived.engine._paths import set_compact
+        set_compact(True)
+
+    client = _make_client(api_base, model, api_key, temperature, max_output, timeout)
+
+    def on_event(ev: dict) -> None:
+        click.echo(json.dumps(ev, ensure_ascii=False))
+
+    try:
+        summary = run_pipeline(
+            template, list(input_files), client,
+            window=window, workdir=workdir, output=output,
+            output_format=output_format, max_sections=max_sections,
+            do_summarize=not no_summarize, max_attempts=max_attempts,
+            on_event=on_event,
+        )
+    except PipelineError as e:
+        click.echo(json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False))
+        raise SystemExit(1)
+    if summary["status"] in ("stuck",) or summary["failed"]:
+        raise SystemExit(1)
 
 
 # ── Revise commands ────────────────────────────────────────────
@@ -818,29 +958,6 @@ def session_search_cmd(session_id, query, focus, budget):
 
     result = session_search(session_id, query, focus=focus, budget=budget)
     _output_json(result)
-
-
-def _llm_client_options(f):
-    """直驱模式的 provider 连接选项（session run / llm exec 共用）."""
-    f = click.option("--api-base", required=True, envvar="PAPER_DERIVED_API_BASE",
-                     help="OpenAI 兼容 API 地址，如 http://localhost:11434/v1（Ollama）")(f)
-    f = click.option("--model", "-m", required=True, envvar="PAPER_DERIVED_MODEL",
-                     help="模型名，如 qwen2.5:14b")(f)
-    f = click.option("--api-key", default="", envvar="PAPER_DERIVED_API_KEY",
-                     help="API Key（本地 provider 通常不需要）")(f)
-    f = click.option("--temperature", default=0.2, type=float, help="采样温度（默认 0.2）")(f)
-    f = click.option("--max-output", default=4096, type=int,
-                     help="单次调用的最大输出 token（默认 4096）")(f)
-    f = click.option("--timeout", default=600.0, type=float, help="单次调用超时秒数")(f)
-    return f
-
-
-def _make_client(api_base, model, api_key, temperature, max_output, timeout):
-    from paper_derived.llm import LLMClient
-    return LLMClient(
-        api_base=api_base, model=model, api_key=api_key,
-        temperature=temperature, max_output_tokens=max_output, timeout=timeout,
-    )
 
 
 @session.command("run")
