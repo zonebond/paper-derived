@@ -99,13 +99,36 @@ class ClaudeCLIClient:
         self.binary = binary
 
     def chat(self, system: str, user: str, max_tokens: int | None = None) -> str:
-        import subprocess
+        """headless 调用，与 Agent 环境完全隔离：
 
-        cmd = [self.binary, "-p", "--output-format", "text"]
+        - --system-prompt **整体替换** Claude Code 的 Agent 系统提示
+          （不是 append——否则引擎指令只是 Agent 人格后面的附注）
+        - --exclude-dynamic-system-prompt-sections 去掉环境/git 等动态注入段
+        - --setting-sources "" 不加载 user/project/local 任何设置
+        - --strict-mcp-config（且不给 --mcp-config）不加载任何 MCP
+        - --disallowedTools "*" + --max-turns 1 禁用工具、单轮作答
+        - --no-session-persistence 不落 session 文件
+        - 子进程 cwd 切到中立临时目录，避免项目 CLAUDE.md/skills 注入
+        """
+        import subprocess
+        import tempfile
+
+        cmd = [
+            self.binary, "-p",
+            "--output-format", "text",
+            "--exclude-dynamic-system-prompt-sections",
+            "--setting-sources", "",
+            "--strict-mcp-config",
+            "--disallowedTools", "*",
+            "--max-turns", "1",
+            "--no-session-persistence",
+        ]
         if self.model:
             cmd += ["--model", self.model]
-        if system:
-            cmd += ["--append-system-prompt", system]
+        cmd += ["--system-prompt", system or "你是文档生成助手，严格按用户消息中的要求输出，不输出任何多余内容。"]
+
+        neutral_cwd = Path(tempfile.gettempdir()) / "pd-llm-neutral"
+        neutral_cwd.mkdir(parents=True, exist_ok=True)
 
         last_err: Exception | None = None
         for attempt in range(self.retries + 1):
@@ -114,7 +137,7 @@ class ClaudeCLIClient:
             try:
                 proc = subprocess.run(
                     cmd, input=user, capture_output=True, text=True,
-                    timeout=self.timeout,
+                    timeout=self.timeout, cwd=str(neutral_cwd),
                 )
             except FileNotFoundError as e:
                 raise LLMError(

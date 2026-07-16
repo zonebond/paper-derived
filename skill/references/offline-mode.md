@@ -53,6 +53,10 @@ paper-derived llm exec .pd/prompts/feed.md --api-base claude-cli -o .pd/response
 ```
 
 - `-m` 可用 `sonnet` / `haiku` / `opus` 别名，留空用 claude CLI 默认模型
+- **与 Agent 环境完全隔离**：`--system-prompt` 整体替换 Claude Code 的 Agent 系统提示
+  （引擎指令就是唯一的 system），不加载任何设置/CLAUDE.md/MCP/skills，禁用工具、
+  单轮作答、不落 session 文件、子进程运行在中立临时目录——headless 调用里没有
+  Agent 人格，只有引擎构造的 prompt
 - 每次调用是独立的无状态 headless 会话，与 OpenAI 客户端语义一致，
   修复重试/占位兜底/审计全套照常生效
 - 对比子代理编排：42 节大模板不再依赖 Agent 逐节派发纪律，也没有子代理超时问题
