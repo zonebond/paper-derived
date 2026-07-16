@@ -316,3 +316,123 @@ def _guard_missing_anchors(sections: list[dict], sample_text: str) -> list[dict]
         sections.append(node)
         added.append({"id": sid, "number": a["number"], "title": a["title"]})
     return added
+
+# ── 确定性多级章节树扫描（register-auto 用）────────────────────
+#
+# 小模型（~30B 级）无法可靠地一次性输出 40+ 节点的嵌套大 JSON。
+# 解法：结构骨架不让 LLM 生成——从样例文档确定性扫描多级编号标题
+# 构建 section_tree，LLM 只负责写三段小文本（抽取/风格/校验指令）。
+
+
+def scan_section_tree(text: str) -> list[dict]:
+    """确定性扫描多级编号标题，构建 section_tree（含层级嵌套）.
+
+    识别 "3.2.1 标题" 式多级编号（顶级号必须落在从 1 递增的一级链上，
+    过滤正文伪命中），回退 markdown #/##/### 层级。
+    返回节点: {"id","title","level","children","dependency"}
+    """
+    top = scan_top_headings(text)
+    top_titles = {a["title"] for a in top}
+    if top:
+        num_re = _re.compile(r"^(\d{1,2}(?:\.\d{1,2})*)[\s、.]\s*(\S.*)$")
+        valid_tops = {int(a["number"]) for a in top}
+        entries: list[tuple[list[int], str]] = []
+        for raw in text.splitlines():
+            line = raw.strip()
+            if not line or len(line) > 60 or line[-1] in "。；，,.;":
+                continue
+            m = num_re.match(line.lstrip("#").strip())
+            if not m:
+                chap = _re.match(r"^第([0-9一二三四五六七八九十]{1,3})[章部分]\s*(.*)$", line)
+                if chap:
+                    n = _cn_to_int(chap.group(1))
+                    if n in valid_tops and chap.group(2).strip():
+                        entries.append(([n], chap.group(2).strip()))
+                continue
+            title = m.group(2).strip()
+            if title[0].isdigit() or title[0] == ".":
+                continue
+            path = [int(x) for x in m.group(1).split(".")]
+            if path[0] not in valid_tops:
+                continue
+            if len(path) == 1 and title not in top_titles:
+                continue  # 一级必须与锚点链一致
+            entries.append((path, title))
+        tree = _entries_to_tree(entries)
+        if tree:
+            return tree
+
+    # markdown 回退：#/##/### 按层级建树
+    md = _re.findall(r"^(#{1,4})\s+(.+?)\s*$", text, _re.M)
+    if not md:
+        return []
+    top_level = min(len(h) for h, _ in md)
+    entries = []
+    counters: list[int] = []
+    for h, t in md:
+        depth = len(h) - top_level + 1
+        counters = (counters + [0] * depth)[:depth]
+        counters[depth - 1] += 1
+        entries.append((list(counters), t.strip()))
+    return _entries_to_tree(entries)
+
+
+def _entries_to_tree(entries: list[tuple[list[int], str]]) -> list[dict]:
+    """把 (编号路径, 标题) 列表折叠为节点树。跳级/无父的条目挂到最近可用层。"""
+    roots: list[dict] = []
+    used_ids: set[str] = set()
+    # path tuple → node
+    index: dict[tuple, dict] = {}
+    for path, title in entries:
+        key = tuple(path)
+        if key in index:
+            continue
+        sid = _make_section_id(title, path, used_ids)
+        node = {
+            "id": sid, "title": title, "level": len(path), "children": [],
+            "dependency": {"type": "input_dependent", "description": "", "expected_sources": []},
+        }
+        index[key] = node
+        parent = None
+        for cut in range(len(path) - 1, 0, -1):
+            parent = index.get(tuple(path[:cut]))
+            if parent is not None:
+                break
+        if parent is not None:
+            node["level"] = parent["level"] + 1
+            parent["children"].append(node)
+        else:
+            node["level"] = 1
+            roots.append(node)
+    # 容器节点（有 children）标记 self_contained：其正文只是引言
+    def mark(nodes):
+        for nd in nodes:
+            if nd["children"]:
+                nd["dependency"]["type"] = "self_contained"
+                mark(nd["children"])
+    mark(roots)
+    return roots
+
+
+def _make_section_id(title: str, path: list[int], used: set[str]) -> str:
+    sid = _to_kebab_case(title)
+    if sid == "template" or not any(c.isalpha() for c in sid):
+        sid = "section-" + "-".join(str(x) for x in path)
+    base, n = sid, 2
+    while sid in used:
+        sid = f"{base}-{n}"; n += 1
+    used.add(sid)
+    return sid
+
+
+def render_structure_prompt(tree: list[dict]) -> str:
+    """从确定性树生成结构指令（无需 LLM）."""
+    lines = ["【结构指令】文档必须包含以下章节及其层级关系（id | 标题 | 层级）：", ""]
+    def walk(nodes, depth=0):
+        for nd in nodes:
+            lines.append(f"{'  ' * depth}- {nd['id']} | {nd['title']} | level {nd['level']}")
+            walk(nd["children"], depth + 1)
+    walk(tree)
+    lines.append("")
+    lines.append("生成时保持上述全部章节与层级，禁止增删。")
+    return "\n".join(lines)

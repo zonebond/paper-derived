@@ -409,8 +409,13 @@ def parse_section_result(
     result = extract_json(llm_response)
     new_section = Section.from_dict(result)
 
-    # 清除 content 中重复的自身标题 / 子节点子树内容（父子章节重复输出防线）
+    # 骨架的 id/title 是权威：小模型常把 title 漂移成 id 或改名，强制归位
     skeleton = doc.find_section(section_id) if doc is not None else None
+    new_section.id = section_id
+    if skeleton is not None and skeleton.title:
+        new_section.title = skeleton.title
+
+    # 清除 content 中重复的自身标题 / 子节点子树内容（父子章节重复输出防线）
     titles = [new_section.title] + ([skeleton.title] if skeleton else [])
     child_titles = [c.title for c in skeleton.children] if skeleton else []
     from paper_derived.models.document import sanitize_section_content

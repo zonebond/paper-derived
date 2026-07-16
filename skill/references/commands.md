@@ -45,6 +45,14 @@ paper-derived template register <sample-file> -n <name> [-d <description>] [--ou
 构造模式：`--out` 写 prompt 文本文件（不加则全量打 stdout）。
 解析模式：加 `--parse <response-file>` 解析 LLM 响应并存储模板，stdout 只回注册摘要（template_id、section 数）。
 
+### `paper-derived template register-auto`
+
+小模型友好的模板注册（直驱）：章节树由引擎确定性扫描，LLM 只写 3 段小文本。~30B 级模型可稳定完成。
+
+```bash
+paper-derived template register-auto <sample> -n <name> --api-base <url> -m <model> [--window <tokens>] [--compact]
+```
+
 ### `paper-derived template list`
 
 列出所有已注册模板。
@@ -127,6 +135,15 @@ paper-derived gen generate -i <input.json> ... -t <template-id> [-O <output.json
 - `--sections`: 分批生成时指定目标 Section
 - `--extract`: 抽取结果 JSON，用于筛选实体
 - `--into`: 已有文档树路径，分批生成时合并
+
+### `paper-derived gen run`
+
+一条龙直驱生成：原始资料 → 分块注册 → feed → 逐节生成 → 组装交付。断点续传：重跑同一条命令即继续。
+
+```bash
+paper-derived gen run -t <template-id> -i <原始资料> [-i ...] --api-base <url> -m <model> \
+  [--window <tokens>] [--compact] [--workdir .pd] [--max-sections N] [-O <交付文件>] [-f <format>]
+```
 
 ### `paper-derived gen validate`
 
