@@ -78,6 +78,30 @@ $PAPER_DERIVED_BIN <cmd> <args> --parse .pd/responses/<key>.json # ③ 主 Agent
    ```
 3. **写完自检**：追加完成后用 `wc -c .pd/responses/<key>.json` 或读取尾部确认文件完整（结尾闭合），再回 DONE。
 
+## 子代理失败/超时的恢复原则
+
+子代理执行失败（超时、无响应、结果残缺）时，**恢复动作只有一种：把任务拆小后重派**。
+
+1. **feed 超大** → 改为增量喂入：每次 `session feed` 只喂**一份**输入资产（可多次），
+   单个 prompt 立刻缩小数倍；见 session.md Step 3。
+2. **单节生成超大** → 调低 `session init --budget` 或改分批生成。
+3. **注册资料超大** → `--chunk-size` 分块，每块一个子代理。
+4. 重派时在子代理指令中注明：prompt 文件较大，分段 Read（offset/limit）读完整再执行。
+
+**绝对禁止**向用户索要 LLM API 地址——在 Claude Code 环境内直驱**不需要任何 API**：
+`--api-base claude-cli` 让引擎通过本机已登录的 `claude` CLI（headless 模式）直接调用 LLM。
+
+拆小重派 2 轮仍失败、或任务量大（如 42 节模板逐节生成）想省编排开销时，
+可**征得用户同意后**切换直驱（无需用户提供任何配置）：
+
+```bash
+$PAPER_DERIVED_BIN session run -s $SID --api-base claude-cli -m sonnet -O output.md
+# 或一条龙：$PAPER_DERIVED_BIN gen run -t <tid> -i <资料>... --api-base claude-cli -m sonnet -O output.md
+```
+
+事件以 JSON 行输出到 stdout，主上下文只承载这些状态行——上下文纪律天然满足。
+OpenAI 兼容 Provider（Ollama 等）的离线直驱见 references/offline-mode.md。
+
 ## 工作目录与交付物纪律
 
 **所有过程文件进 `.pd/`（隐藏目录），用户的当前目录只留最终交付物。**

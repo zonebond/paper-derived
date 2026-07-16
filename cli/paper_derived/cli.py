@@ -40,7 +40,7 @@ def version_cmd():
 
     info = get_version_info()
     info["compact_prompts"] = (PROMPTS_DIR / "compact").is_dir()
-    info["capabilities"] = ["out-text-prompt", "parse-output-file", "session-run", "llm-exec", "compact-prompts", "doc-export", "doc-sanitize", "pd-workdir", "template-register-auto", "gen-run", "guidance-slices", "placeholder-fallback", "structure-audit"]
+    info["capabilities"] = ["out-text-prompt", "parse-output-file", "session-run", "llm-exec", "compact-prompts", "doc-export", "doc-sanitize", "pd-workdir", "template-register-auto", "gen-run", "guidance-slices", "placeholder-fallback", "structure-audit", "claude-cli-provider"]
     click.echo(json.dumps(info, ensure_ascii=False))
 
 
@@ -144,9 +144,10 @@ def _output_asset(result, output: str | None, asset_name: str, slim: bool) -> No
 def _llm_client_options(f):
     """直驱模式的 provider 连接选项（session run / llm exec 共用）."""
     f = click.option("--api-base", required=True, envvar="PAPER_DERIVED_API_BASE",
-                     help="OpenAI 兼容 API 地址，如 http://localhost:11434/v1（Ollama）")(f)
-    f = click.option("--model", "-m", required=True, envvar="PAPER_DERIVED_MODEL",
-                     help="模型名，如 qwen2.5:14b")(f)
+                     help="OpenAI 兼容 API 地址，如 http://localhost:11434/v1（Ollama）；"
+                          "或 claude-cli（借用本机已登录的 claude CLI，无需 API）")(f)
+    f = click.option("--model", "-m", default="", envvar="PAPER_DERIVED_MODEL",
+                     help="模型名，如 qwen2.5:14b；claude-cli 时可用 sonnet/haiku/opus（留空用默认）")(f)
     f = click.option("--api-key", default="", envvar="PAPER_DERIVED_API_KEY",
                      help="API Key（本地 provider 通常不需要）")(f)
     f = click.option("--temperature", default=0.2, type=float, help="采样温度（默认 0.2）")(f)
@@ -157,9 +158,9 @@ def _llm_client_options(f):
 
 
 def _make_client(api_base, model, api_key, temperature, max_output, timeout):
-    from paper_derived.llm import LLMClient
-    return LLMClient(
-        api_base=api_base, model=model, api_key=api_key,
+    from paper_derived.llm import make_client
+    return make_client(
+        api_base, model, api_key=api_key,
         temperature=temperature, max_output_tokens=max_output, timeout=timeout,
     )
 

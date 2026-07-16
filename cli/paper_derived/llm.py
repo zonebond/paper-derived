@@ -75,6 +75,103 @@ class LLMError(RuntimeError):
     """LLM 调用失败（重试耗尽后抛出）。"""
 
 
+class ClaudeCLIClient:
+    """通过本机 `claude` CLI 的 headless 模式（claude -p）调用 LLM.
+
+    适用场景：在 Claude Code 等 CLI Agent 环境内运行直驱命令
+    （session run / gen run / llm exec），无需任何 API 地址或 key——
+    子进程继承本机已登录的 claude 认证（订阅或 API 均可）。
+    每次调用 = 一次无状态 headless 会话，与 OpenAI 客户端语义一致。
+    """
+
+    def __init__(
+        self,
+        model: str = "",
+        temperature: float = 0.2,          # claude -p 不暴露温度，仅为接口兼容
+        max_output_tokens: int = 4096,     # 同上
+        timeout: float = 600.0,
+        retries: int = 2,
+        binary: str = "claude",
+    ):
+        self.model = model
+        self.timeout = timeout
+        self.retries = retries
+        self.binary = binary
+
+    def chat(self, system: str, user: str, max_tokens: int | None = None) -> str:
+        """headless 调用，与 Agent 环境完全隔离：
+
+        - --system-prompt **整体替换** Claude Code 的 Agent 系统提示
+          （不是 append——否则引擎指令只是 Agent 人格后面的附注）
+        - --exclude-dynamic-system-prompt-sections 去掉环境/git 等动态注入段
+        - --setting-sources "" 不加载 user/project/local 任何设置
+        - --strict-mcp-config（且不给 --mcp-config）不加载任何 MCP
+        - --disallowedTools "*" + --max-turns 1 禁用工具、单轮作答
+        - --no-session-persistence 不落 session 文件
+        - 子进程 cwd 切到中立临时目录，避免项目 CLAUDE.md/skills 注入
+        """
+        import subprocess
+        import tempfile
+
+        cmd = [
+            self.binary, "-p",
+            "--output-format", "text",
+            "--exclude-dynamic-system-prompt-sections",
+            "--setting-sources", "",
+            "--strict-mcp-config",
+            "--disallowedTools", "*",
+            "--max-turns", "1",
+            "--no-session-persistence",
+        ]
+        if self.model:
+            cmd += ["--model", self.model]
+        cmd += ["--system-prompt", system or "你是文档生成助手，严格按用户消息中的要求输出，不输出任何多余内容。"]
+
+        neutral_cwd = Path(tempfile.gettempdir()) / "pd-llm-neutral"
+        neutral_cwd.mkdir(parents=True, exist_ok=True)
+
+        last_err: Exception | None = None
+        for attempt in range(self.retries + 1):
+            if attempt > 0:
+                time.sleep(2 ** attempt)
+            try:
+                proc = subprocess.run(
+                    cmd, input=user, capture_output=True, text=True,
+                    timeout=self.timeout, cwd=str(neutral_cwd),
+                )
+            except FileNotFoundError as e:
+                raise LLMError(
+                    f"找不到 `{self.binary}` 可执行文件——claude-cli provider 需要本机安装并登录 Claude Code"
+                ) from e
+            except subprocess.TimeoutExpired as e:
+                last_err = LLMError(f"claude -p 执行超时（{self.timeout}s）")
+                continue
+            if proc.returncode != 0:
+                last_err = LLMError(f"claude -p 退出码 {proc.returncode}: {proc.stderr.strip()[:300]}")
+                continue
+            out = proc.stdout.strip()
+            if not out:
+                last_err = LLMError("claude -p 返回空输出")
+                continue
+            return out
+        raise last_err  # type: ignore[misc]
+
+
+def make_client(api_base: str, model: str, api_key: str = "", temperature: float = 0.2,
+                max_output_tokens: int = 4096, timeout: float = 600.0):
+    """按 api_base 选择客户端：
+
+    - "claude-cli" → ClaudeCLIClient（借用本机已登录的 claude CLI，无需 API）
+    - 其他 → LLMClient（OpenAI 兼容 HTTP API）
+    """
+    if api_base.strip().lower() in ("claude-cli", "claude"):
+        return ClaudeCLIClient(model=model, temperature=temperature,
+                               max_output_tokens=max_output_tokens, timeout=timeout)
+    return LLMClient(api_base=api_base, model=model, api_key=api_key,
+                     temperature=temperature, max_output_tokens=max_output_tokens,
+                     timeout=timeout)
+
+
 class LLMClient:
     """OpenAI 兼容 chat/completions 客户端（仅标准库，离线环境零依赖）.
 
