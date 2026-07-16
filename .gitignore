@@ -10,3 +10,5 @@ build/
 uv.lock
 .python-version
 cli/paper_derived/_buildinfo.py
+.paper-working/
+.runner/
