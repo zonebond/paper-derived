@@ -123,57 +123,6 @@ def _summarize_section(session_id: str, section_id: str, client: LLMClient, on_e
         _emit(on_event, "summarize_skipped", section=section_id, error=str(e)[:200])
 
 
-def _fill_placeholder(session_id: str, section_id: str, reason: str, on_event) -> None:
-    """引擎直接写占位内容（不经过 LLM）——「绝对不缺失」的确定性兜底。"""
-    from paper_derived.models.document import Section
-    from paper_derived.storage import load_template
-    from paper_derived.engine.template import find_tree_node
-
-    session, store, doc = load_session(session_id)
-    skeleton = doc.find_section(section_id) if doc else None
-    title = skeleton.title if skeleton else section_id
-
-    template = load_template(session.template_id)
-    node = find_tree_node(template.section_tree, section_id) if template else None
-    guidance = (node or {}).get("guidance", "")
-    req = guidance.splitlines()[0][:120] if guidance else "见模板定义"
-    hint = (store.extraction_map.get(section_id).hint
-            if store and section_id in store.extraction_map else "")
-
-    content = (f"｛占位说明：本节要求——{req}；"
-               f"当前输入资料未提供相关内容（{reason}），待补充后重新生成本节。｝")
-    placeholder = Section(
-        id=section_id, title=title, content=content,
-        level=skeleton.level if skeleton else 1,
-        status="placeholder",
-        hints=[h for h in (hint, reason) if h],
-    )
-    if doc is not None:
-        doc.update_section(section_id, placeholder)
-    if section_id in session.section_progress:
-        session.section_progress[section_id].status = "done"
-    checkpoint_session(session, store, doc)
-    _emit(on_event, "placeholder_filled", section=section_id, reason=reason)
-
-
-def audit_structure(session_id: str) -> dict:
-    """组装前的确定性结构审计：对照模板逐一核对节点存在且非空。"""
-    from paper_derived.storage import load_template
-
-    session, store, doc = load_session(session_id)
-    template = load_template(session.template_id)
-    expected = template.section_ids if template else list(session.section_progress.keys())
-    present = set(doc.collect_section_ids()) if doc else set()
-    missing = [sid for sid in expected if sid not in present]
-    empty = []
-    for sid in expected:
-        sec = doc.find_section(sid) if doc else None
-        if sec is not None and not sec.content.strip():
-            empty.append(sid)
-    return {"total": len(expected), "missing": missing, "empty": empty,
-            "complete": not missing and not empty}
-
-
 def run_session(
     session_id: str,
     client: LLMClient,
@@ -181,7 +130,6 @@ def run_session(
     max_sections: int = 0,
     do_summarize: bool = True,
     max_attempts: int = 3,
-    placeholders: bool = False,
     on_event=None,
 ) -> dict:
     """驱动 session 的生成循环直到 assemble 就绪 / 需要输入 / 无法推进。
@@ -208,14 +156,8 @@ def run_session(
             return _finish(session_id, "ready_to_assemble", failed, on_event)
 
         if action == "feed_more":
-            pending = nxt.get("pending_sections", [])
-            if placeholders:
-                # 占位模式：缺输入的节由引擎直接写占位说明，不停下
-                for sid in pending:
-                    _fill_placeholder(session_id, sid, "输入资料未覆盖本节", on_event)
-                continue
             _emit(on_event, "needs_input",
-                  pending_sections=pending,
+                  pending_sections=nxt.get("pending_sections", []),
                   message=nxt.get("message", ""))
             return _finish(session_id, "needs_input", failed, on_event)
 
@@ -237,9 +179,6 @@ def run_session(
                 processed += 1
                 if not ok:
                     failed.append(sid)
-                    if placeholders:
-                        # 重试耗尽也不留空节：引擎写占位说明
-                        _fill_placeholder(session_id, sid, "生成失败（重试耗尽）", on_event)
             continue
 
         return _finish(session_id, "stuck", failed, on_event)
@@ -255,7 +194,6 @@ def _finish(session_id: str, status: str, failed: list[str], on_event) -> dict:
         "progress": f"{session.done_sections}/{session.total_sections}",
         "failed": failed,
         "phase": session.phase,
-        "audit": audit_structure(session_id),
     }
     _emit(on_event, "run_finished", **summary)
     return summary
@@ -405,7 +343,6 @@ def run_pipeline(
     max_sections: int = 0,
     do_summarize: bool = True,
     max_attempts: int = 3,
-    placeholders: bool = True,
     on_event=None,
 ) -> dict:
     """原始资料 → 注册输入（分块）→ session init/feed → 逐节生成 → 组装交付。
@@ -499,8 +436,7 @@ def run_pipeline(
     # 4) 生成循环
     summary = run_session(
         session_id, client, window=window, max_sections=max_sections,
-        do_summarize=do_summarize, max_attempts=max_attempts,
-        placeholders=placeholders, on_event=on_event,
+        do_summarize=do_summarize, max_attempts=max_attempts, on_event=on_event,
     )
 
     # 5) 组装交付

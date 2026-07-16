@@ -40,7 +40,11 @@ def version_cmd():
 
     info = get_version_info()
     info["compact_prompts"] = (PROMPTS_DIR / "compact").is_dir()
+<<<<<<< HEAD
     info["capabilities"] = ["out-text-prompt", "parse-output-file", "session-run", "llm-exec", "compact-prompts", "doc-export", "doc-sanitize", "pd-workdir", "template-register-auto", "gen-run", "guidance-slices", "placeholder-fallback", "structure-audit", "claude-cli-provider"]
+=======
+    info["capabilities"] = ["out-text-prompt", "parse-output-file", "session-run", "llm-exec", "compact-prompts", "doc-export", "doc-sanitize", "pd-workdir", "template-register-auto", "gen-run"]
+>>>>>>> parent of 1ba602a (Merge pull request #9 from zonebond/claude/skill-token-limit-overflow-q65w3j)
     click.echo(json.dumps(info, ensure_ascii=False))
 
 
@@ -714,13 +718,11 @@ def doc_export(doc_file, output, output_format):
 @click.option("--max-sections", default=0, type=int, help="本次最多生成的 Section 数（0=不限）")
 @click.option("--no-summarize", "no_summarize", is_flag=True, default=False)
 @click.option("--max-attempts", default=3, type=int, help="每步最大尝试次数（含格式修复重试）")
-@click.option("--placeholders/--no-placeholders", "placeholders", default=True,
-              help="缺输入/生成失败的节由引擎直接写占位说明（默认开——保证结构绝不缺失）")
 @click.option("--output", "-O", default="", help="交付文件路径（如 output.md / output.docx）")
 @click.option("--format", "-f", "output_format", default=None, help="输出格式: md|docx|pdf|json")
 def gen_run(template, input_files, api_base, model, api_key, temperature, max_output,
             timeout, window, compact, workdir, max_sections, no_summarize,
-            max_attempts, placeholders, output, output_format):
+            max_attempts, output, output_format):
     """一条龙直驱生成：原始资料 → 注册（自动分块）→ feed → 逐节生成 → 组装交付。
 
     全程引擎调 Provider，零 Agent 编排；~30B 级模型可稳定完成。
@@ -744,7 +746,7 @@ def gen_run(template, input_files, api_base, model, api_key, temperature, max_ou
             window=window, workdir=workdir, output=output,
             output_format=output_format, max_sections=max_sections,
             do_summarize=not no_summarize, max_attempts=max_attempts,
-            placeholders=placeholders, on_event=on_event,
+            on_event=on_event,
         )
     except PipelineError as e:
         click.echo(json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False))
@@ -975,15 +977,13 @@ def session_search_cmd(session_id, query, focus, budget):
 @click.option("--max-attempts", default=3, type=int, help="单 Section 最大尝试次数（含格式修复重试）")
 @click.option("--compact", is_flag=True, default=False,
               help="使用精简版内置 prompt（小模型推荐；其他命令用 PAPER_DERIVED_COMPACT=1 开启）")
-@click.option("--placeholders", is_flag=True, default=False,
-              help="缺输入/生成失败的节由引擎直接写占位说明，不停下（gen run 默认开，此处默认关）")
 @click.option("--assemble/--no-assemble", "do_assemble", default=True,
               help="全部完成后自动组装（默认开）")
 @click.option("--output", "-O", default=None, help="组装输出文件路径（默认用 session init 时的配置）")
 @click.option("--format", "-f", "output_format", default=None, help="输出格式: md|docx|pdf|json")
 def session_run_cmd(session_id, api_base, model, api_key, temperature, max_output, timeout,
                     window, max_sections, do_summarize, max_attempts, compact,
-                    placeholders, do_assemble, output, output_format):
+                    do_assemble, output, output_format):
     """直驱模式：引擎自己调本地/离线 LLM，跑完生成循环。无需 Agent 编排。
 
     每次 LLM 调用都是无状态单 prompt；中断后重跑本命令自动续传。
@@ -1006,7 +1006,7 @@ def session_run_cmd(session_id, api_base, model, api_key, temperature, max_outpu
         session_id, client,
         window=window, max_sections=max_sections,
         do_summarize=do_summarize, max_attempts=max_attempts,
-        placeholders=placeholders, on_event=on_event,
+        on_event=on_event,
     )
 
     if summary["status"] == "ready_to_assemble" and do_assemble:

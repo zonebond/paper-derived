@@ -337,16 +337,7 @@ def build_section_prompt(
     # 获取 section 标题和结构
     section = doc.find_section(section_id) if doc else None
     section_title = section.title if section else section_id
-
-    # 结构上下文：优先用该节的「要求原文」（注册时从模板逐字切片的 guidance）——
-    # 比整份全局结构指令更小、更准，小模型不需要从全局指令里回忆本节该写什么
-    from paper_derived.engine.template import find_tree_node
-    node = find_tree_node(template.section_tree, section_id)
-    guidance = (node or {}).get("guidance", "")
-    if guidance:
-        section_structure = f"【本节要求·模板原文，严格遵循】\n{guidance}"
-    else:
-        section_structure = template.structure_prompt  # 回退完整结构指令
+    section_structure = template.structure_prompt  # 使用完整结构指令
 
     # 核心: 自动组装上下文（预留输出空间）
     # token_budget 是输入+输出的总预算，输入侧只占 70%，留 30% 给模型生成

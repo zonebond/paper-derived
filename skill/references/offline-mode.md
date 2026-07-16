@@ -28,6 +28,7 @@ paper-derived gen run -t <template-id> -i 资料1.docx -i 资料2.md \
 每一步 LLM 调用都是小任务（单节生成/单块抽取/一段文本），全部带格式修复重试；
 结构完整性、层级、标题、编号由引擎确定性保证，与模型能力无关。
 
+<<<<<<< HEAD
 **结构与章节要求的 100% 保证链**（全部确定性，不落在模型身上）：
 
 1. `register-auto` 扫描建树时，每个标题到下一个标题之间的原文被**逐字切片**存为该节
@@ -61,6 +62,8 @@ paper-derived llm exec .pd/prompts/feed.md --api-base claude-cli -o .pd/response
   修复重试/占位兜底/审计全套照常生效
 - 对比子代理编排：42 节大模板不再依赖 Agent 逐节派发纪律，也没有子代理超时问题
 
+=======
+>>>>>>> parent of 1ba602a (Merge pull request #9 from zonebond/claude/skill-token-limit-overflow-q65w3j)
 ## 分步流水线（需要细粒度控制时）
 
 ```bash

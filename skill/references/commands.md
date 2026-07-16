@@ -142,12 +142,8 @@ paper-derived gen generate -i <input.json> ... -t <template-id> [-O <output.json
 
 ```bash
 paper-derived gen run -t <template-id> -i <原始资料> [-i ...] --api-base <url> -m <model> \
-  [--window <tokens>] [--compact] [--workdir .pd] [--max-sections N] \
-  [--no-placeholders] [-O <交付文件>] [-f <format>]
+  [--window <tokens>] [--compact] [--workdir .pd] [--max-sections N] [-O <交付文件>] [-f <format>]
 ```
-
-- `--placeholders`（默认开）：缺输入/生成失败的节由引擎直接写占位说明（含该节要求原文），保证结构绝不缺失；`--no-placeholders` 改为停下等人
-- 结束时 `run_finished` 事件附带确定性结构审计 `audit`（missing/empty/complete）
 
 ### `paper-derived gen validate`
 
@@ -287,7 +283,6 @@ paper-derived session run -s <session-id> --api-base <url> -m <model> \
 - `--window`：Provider 上下文窗口，自动收缩预算 budget = min(现值, window/2)
 - `--compact`：用精简版内置 prompt（输出契约不变；小模型推荐）
 - `--max-sections`：本次最多生成 N 节后停（人工分段审查）
-- `--placeholders`：缺输入/生成失败的节由引擎写占位说明不停下（此处默认关，`gen run` 默认开）
 - 解析失败自动带格式修正重试；缺输入（feed_more）停下报告；中断后重跑自动续传
 - 全部完成默认自动 assemble；stdout 每行一个 JSON 事件
 
