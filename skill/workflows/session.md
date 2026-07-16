@@ -104,14 +104,24 @@ $PAPER_DERIVED_BIN session init -t <template-id> [--budget 60000]
 
 > **⚠️ 同样受上下文纪律约束**：`input register` 的执行 prompt 里含有原始资料/分块原文（每块可达 30000 字符）。**这一步也必须走子代理**——否则光注册几份大资料就能在 Session 开始前撑爆主上下文。即用 `--out` 落盘 prompt → 子代理执行 → 写响应文件 → `--parse`。大文档务必叠加 `--chunk-size` + `--slim`。
 
-## Step 3: 喂入上下文库
+## Step 3: 喂入上下文库（默认增量：每次一份资产）
+
+**多份输入不要一次性 feed**——feed prompt 含模板结构/抽取指令 + 各资产的 summary+entities，
+多份叠加很容易超过 15K token，子代理执行会变慢甚至超时。逐份增量喂入，每份一个小 prompt：
 
 ```bash
-# 落盘 feed prompt（含各输入的 summary+entities，可能较大）
-$PAPER_DERIVED_BIN session feed -s $SID -i .pd/assets/input-1.json -i .pd/assets/input-2.json --out .pd/prompts/feed.md
-# → 子代理读 .pd/prompts/feed.md 执行 → 写 .pd/responses/feed.json → 回 DONE
-$PAPER_DERIVED_BIN session feed -s $SID -i .pd/assets/input-1.json -i .pd/assets/input-2.json --parse .pd/responses/feed.json
+for A in .pd/assets/input-*.json; do
+  K=$(basename $A .json)
+  # ① 落盘该份资产的 feed prompt（体积小；看 stdout 摘要里的 prompt_tokens）
+  $PAPER_DERIVED_BIN session feed -s $SID -i $A --out .pd/prompts/feed-$K.md
+  # ② 子代理读 .pd/prompts/feed-$K.md 执行 → 写 .pd/responses/feed-$K.json → DONE
+  # ③ 解析（增量合入 ContextStore）
+  $PAPER_DERIVED_BIN session feed -s $SID -i $A --parse .pd/responses/feed-$K.json
+done
 ```
+
+> 若单份资产的 feed prompt 仍超过 ~15K token，说明该资产 entities 过多——
+> 回到注册步骤用更小的 `--chunk-size` 重新注册该资产。
 
 输出**只有状态报告**：
 
@@ -215,6 +225,7 @@ $PAPER_DERIVED_BIN session search -s $SID "认证方案" [--focus rule:jwt-auth]
 
 | 条件 | 主 Agent 行为 |
 |------|-----------|
+| 子代理超时/无响应（常见于 15K+ token 的大 prompt） | **拆小重派**：feed 改逐份资产增量、生成改分批/降 budget。禁止向用户索要 LLM API 或擅自切换 session run（见 SKILL.md「子代理失败/超时的恢复原则」） |
 | 子代理反复报 `InputValidationError`（Write 缺 file_path/content） | 响应超长、单次 Write 被截断。`rm -f` 残留的半截响应文件，重派子代理并在指令中强调「分段写入」纪律（见②） |
 | 子代理报 `File has not been read yet` | 目标响应文件是上次残留。指示子代理先 `rm -f` 再写 |
 | 子代理回的响应 `--parse` 失败（格式不对），attempt < 3 | 重派子代理执行同一 prompt（重试全程在子代理内） |
@@ -239,10 +250,13 @@ mkdir -p .pd/prompts .pd/responses .pd/assets
 
 # 2. 注册输入（每份都：--out 落盘 → 子代理执行 → --parse；大文档加 --chunk-size --slim）
 
-# 3. 喂入
-$PAPER_DERIVED_BIN session feed -s $SID -i requirements.json -i api-spec.json --out .pd/prompts/feed.md
-#   → 子代理执行 .pd/prompts/feed.md → 写 .pd/responses/feed.json → DONE
-$PAPER_DERIVED_BIN session feed -s $SID -i requirements.json -i api-spec.json --parse .pd/responses/feed.json
+# 3. 喂入（增量：每次一份资产，防 feed prompt 过大）
+for A in .pd/assets/input-*.json; do
+  K=$(basename $A .json)
+  $PAPER_DERIVED_BIN session feed -s $SID -i $A --out .pd/prompts/feed-$K.md
+  #   → 子代理执行 .pd/prompts/feed-$K.md → 写 .pd/responses/feed-$K.json → DONE
+  $PAPER_DERIVED_BIN session feed -s $SID -i $A --parse .pd/responses/feed-$K.json
+done
 
 # 4. 循环生成（主 Agent 只发命令、收 DONE、看状态）
 while true; do

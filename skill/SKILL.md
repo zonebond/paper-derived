@@ -78,6 +78,21 @@ $PAPER_DERIVED_BIN <cmd> <args> --parse .pd/responses/<key>.json # ③ 主 Agent
    ```
 3. **写完自检**：追加完成后用 `wc -c .pd/responses/<key>.json` 或读取尾部确认文件完整（结尾闭合），再回 DONE。
 
+## 子代理失败/超时的恢复原则
+
+子代理执行失败（超时、无响应、结果残缺）时，**恢复动作只有一种：把任务拆小后重派**。
+
+1. **feed 超大** → 改为增量喂入：每次 `session feed` 只喂**一份**输入资产（可多次），
+   单个 prompt 立刻缩小数倍；见 session.md Step 3。
+2. **单节生成超大** → 调低 `session init --budget` 或改分批生成。
+3. **注册资料超大** → `--chunk-size` 分块，每块一个子代理。
+4. 重派时在子代理指令中注明：prompt 文件较大，分段 Read（offset/limit）读完整再执行。
+
+**绝对禁止**：因为子代理失败就向用户索要 LLM API 地址、或擅自建议切换 `session run` 直驱
+模式。直驱是**离线场景**的路径，仅当用户主动要求离线运行或明确提供了 OpenAI 兼容
+Provider 时才使用（见 references/offline-mode.md）。在线 Claude Code 编排下你自己就是
+LLM——子代理失败说明任务太大，不是缺 API。
+
 ## 工作目录与交付物纪律
 
 **所有过程文件进 `.pd/`（隐藏目录），用户的当前目录只留最终交付物。**
