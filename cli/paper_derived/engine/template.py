@@ -325,29 +325,37 @@ def _guard_missing_anchors(sections: list[dict], sample_text: str) -> list[dict]
 
 
 def scan_section_tree(text: str) -> list[dict]:
-    """确定性扫描多级编号标题，构建 section_tree（含层级嵌套）.
+    """确定性扫描多级编号标题，构建 section_tree（含层级嵌套 + 逐节要求原文）.
 
     识别 "3.2.1 标题" 式多级编号（顶级号必须落在从 1 递增的一级链上，
     过滤正文伪命中），回退 markdown #/##/### 层级。
-    返回节点: {"id","title","level","children","dependency"}
+
+    每个节点附带 guidance 字段：该标题行到下一个标题行之间的**原文逐字切片**
+    （即模板中该节的【提示】【示例】等章节要求），100% 保真、零 LLM 参与。
+
+    返回节点: {"id","title","level","children","dependency","guidance"}
     """
+    lines = text.splitlines()
     top = scan_top_headings(text)
-    top_titles = {a["title"] for a in top}
+    entries: list[tuple[list[int], str, int]] = []  # (编号路径, 标题, 行号)
+
     if top:
-        num_re = _re.compile(r"^(\d{1,2}(?:\.\d{1,2})*)[\s、.]\s*(\S.*)$")
+        top_titles = {a["title"] for a in top}
         valid_tops = {int(a["number"]) for a in top}
-        entries: list[tuple[list[int], str]] = []
-        for raw in text.splitlines():
+        num_re = _re.compile(r"^(\d{1,2}(?:\.\d{1,2})*)[\s、.]\s*(\S.*)$")
+        chap_re = _re.compile(r"^第([0-9一二三四五六七八九十]{1,3})[章部分]\s*(.*)$")
+        for idx, raw in enumerate(lines):
             line = raw.strip()
             if not line or len(line) > 60 or line[-1] in "。；，,.;":
                 continue
+            m = chap_re.match(line)
+            if m:
+                n = _cn_to_int(m.group(1))
+                if n in valid_tops and m.group(2).strip():
+                    entries.append(([n], m.group(2).strip(), idx))
+                continue
             m = num_re.match(line.lstrip("#").strip())
             if not m:
-                chap = _re.match(r"^第([0-9一二三四五六七八九十]{1,3})[章部分]\s*(.*)$", line)
-                if chap:
-                    n = _cn_to_int(chap.group(1))
-                    if n in valid_tops and chap.group(2).strip():
-                        entries.append(([n], chap.group(2).strip()))
                 continue
             title = m.group(2).strip()
             if title[0].isdigit() or title[0] == ".":
@@ -357,39 +365,62 @@ def scan_section_tree(text: str) -> list[dict]:
                 continue
             if len(path) == 1 and title not in top_titles:
                 continue  # 一级必须与锚点链一致
-            entries.append((path, title))
-        tree = _entries_to_tree(entries)
-        if tree:
-            return tree
+            entries.append((path, title, idx))
 
-    # markdown 回退：#/##/### 按层级建树
-    md = _re.findall(r"^(#{1,4})\s+(.+?)\s*$", text, _re.M)
-    if not md:
-        return []
-    top_level = min(len(h) for h, _ in md)
-    entries = []
-    counters: list[int] = []
-    for h, t in md:
-        depth = len(h) - top_level + 1
-        counters = (counters + [0] * depth)[:depth]
-        counters[depth - 1] += 1
-        entries.append((list(counters), t.strip()))
-    return _entries_to_tree(entries)
+    if not entries:
+        # markdown 回退：#/##/### 按层级建树
+        md_re = _re.compile(r"^(#{1,4})\s+(.+?)\s*$")
+        md_hits = [(idx, m.group(1), m.group(2).strip())
+                   for idx, raw in enumerate(lines)
+                   if (m := md_re.match(raw.strip()))]
+        if not md_hits:
+            return []
+        top_level = min(len(h) for _, h, _ in md_hits)
+        counters: list[int] = []
+        for idx, h, t in md_hits:
+            depth = len(h) - top_level + 1
+            counters = (counters + [0] * depth)[:depth]
+            counters[depth - 1] += 1
+            entries.append((list(counters), t, idx))
+
+    # guidance 切片：本标题行之后到下一个候选标题行之前的原文。
+    # 边界用「所有形似标题的行」（含被递增链过滤拒绝的），
+    # 避免被拒标题及其内容污染前一节的要求原文。
+    boundary_re = _re.compile(
+        r"^(#{1,6}\s+\S|\d{1,2}(?:\.\d{1,2})*[\s、.]\s*\S|第[0-9一二三四五六七八九十]{1,3}[章部分])")
+    all_headings = sorted({idx for _, _, idx in entries} | {
+        i for i, raw in enumerate(lines)
+        if (l := raw.strip()) and len(l) <= 60 and l[-1] not in "。；，,.;"
+        and boundary_re.match(l)
+    })
+    enriched = []
+    for path, title, idx in entries:
+        later = [h for h in all_headings if h > idx]
+        nxt = later[0] if later else len(lines)
+        guidance = "\n".join(lines[idx + 1:nxt]).strip()
+        if len(guidance) > GUIDANCE_MAX_CHARS:
+            guidance = guidance[:GUIDANCE_MAX_CHARS] + "\n（要求原文过长，已截断）"
+        enriched.append((path, title, guidance))
+    return _entries_to_tree(enriched)
 
 
-def _entries_to_tree(entries: list[tuple[list[int], str]]) -> list[dict]:
-    """把 (编号路径, 标题) 列表折叠为节点树。跳级/无父的条目挂到最近可用层。"""
+GUIDANCE_MAX_CHARS = 3000
+
+
+def _entries_to_tree(entries: list[tuple[list[int], str, str]]) -> list[dict]:
+    """把 (编号路径, 标题, 要求原文) 列表折叠为节点树。跳级条目挂到最近可用层。"""
     roots: list[dict] = []
     used_ids: set[str] = set()
     # path tuple → node
     index: dict[tuple, dict] = {}
-    for path, title in entries:
+    for path, title, guidance in entries:
         key = tuple(path)
         if key in index:
             continue
         sid = _make_section_id(title, path, used_ids)
         node = {
             "id": sid, "title": title, "level": len(path), "children": [],
+            "guidance": guidance,
             "dependency": {"type": "input_dependent", "description": "", "expected_sources": []},
         }
         index[key] = node
@@ -436,3 +467,18 @@ def render_structure_prompt(tree: list[dict]) -> str:
     lines.append("")
     lines.append("生成时保持上述全部章节与层级，禁止增删。")
     return "\n".join(lines)
+
+
+def find_tree_node(section_tree: list[dict], section_id: str) -> dict | None:
+    """在 section_tree 中按 id 查找节点（含 guidance 等模板元数据）."""
+    def walk(nodes):
+        for nd in nodes:
+            if not isinstance(nd, dict):
+                continue
+            if nd.get("id") == section_id:
+                return nd
+            found = walk(nd.get("children", []))
+            if found:
+                return found
+        return None
+    return walk(section_tree or [])
