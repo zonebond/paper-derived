@@ -40,7 +40,7 @@ def version_cmd():
 
     info = get_version_info()
     info["compact_prompts"] = (PROMPTS_DIR / "compact").is_dir()
-    info["capabilities"] = ["out-text-prompt", "parse-output-file", "session-run", "llm-exec", "compact-prompts", "doc-export", "pd-workdir"]
+    info["capabilities"] = ["out-text-prompt", "parse-output-file", "session-run", "llm-exec", "compact-prompts", "doc-export", "doc-sanitize", "pd-workdir"]
     click.echo(json.dumps(info, ensure_ascii=False))
 
 
@@ -593,6 +593,32 @@ def gen_validate(doc, template, parse, prompt_file):
 @main.group()
 def doc():
     """文档树操作（确定性，无需 LLM）."""
+
+
+@doc.command("sanitize")
+@click.argument("doc_file", type=click.Path(exists=True))
+@click.option("--output", "-O", default=None, type=click.Path(),
+              help="净化后写入路径（默认原地覆盖）")
+def doc_sanitize(doc_file, output):
+    """净化已有 DocumentTree：清除各节 content 中的 markdown 标题行。
+
+    修复历史生成结果的结构污染（层级错乱/硬编码编号/多余子结构/重复标题），
+    无需重新生成。规则同引擎解析路径：重复标题删除、子节子树截断、
+    自创子结构降级为加粗小标题。之后可用 doc export 重新渲染交付文件。
+    """
+    from paper_derived.models.document import DocumentTree
+
+    tree = DocumentTree.from_dict(json.loads(Path(doc_file).read_text(encoding="utf-8")))
+    before = json.dumps(tree.to_dict(), ensure_ascii=False)
+    tree.sanitize_headings()
+    after_dict = tree.to_dict()
+    out_path = output or doc_file
+    _write_result_json(after_dict, out_path)
+    click.echo(json.dumps({
+        "status": "sanitized",
+        "output": str(out_path),
+        "changed": json.dumps(after_dict, ensure_ascii=False) != before,
+    }, ensure_ascii=False))
 
 
 @doc.command("export")

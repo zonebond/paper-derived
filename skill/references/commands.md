@@ -136,6 +136,17 @@ paper-derived gen generate -i <input.json> ... -t <template-id> [-O <output.json
 paper-derived gen validate <doc.json> -t <template-id>
 ```
 
+### `paper-derived doc sanitize`
+
+净化已有 DocumentTree：清除各节 content 中的 markdown 标题行（层级错乱/硬编码编号/多余子结构/重复标题的修复工具，确定性、无需 LLM、无需重新生成）。
+
+```bash
+paper-derived doc sanitize .pd/output.json            # 原地净化
+paper-derived doc sanitize old.json -O fixed.json      # 另存
+```
+
+规则：与本节标题重复的标题行删除；与直接子节标题重复的标题行起截断（子树重复）；其余自创标题降级为加粗小标题并剥掉编号；代码块内不动。净化后用 `doc export` 重新渲染交付文件。
+
 ### `paper-derived doc export`
 
 把 DocumentTree JSON（`.pd/output.json` / `.pd/doc.json`）渲染为最终交付文件（确定性，无需 LLM）。

@@ -21,13 +21,20 @@ def _heading_text(line: str) -> str | None:
 def sanitize_section_content(
     content: str, titles: list[str], child_titles: list[str]
 ) -> str:
-    """清除 LLM 塞进 content 的重复标题（父子章节重复输出 bug 的确定性防线）.
+    """清除 LLM 塞进 content 的 markdown 标题行（结构污染的确定性防线）.
 
-    规则：
-    1. 正文开始前出现的、与本节标题相同的标题行（含 "1 范围" 这类编号变体）→ 删除该行。
-       节标题由渲染器统一输出，content 里不该再有一份。
+    契约：content 是本节自身正文，**不允许包含任何 markdown 标题行**——
+    否则会破坏渲染层级（伪 Section 与真章节同级）、引入硬编码编号、
+    造成父子内容重复。规则：
+
+    1. 正文开始前出现的、与本节标题相同的标题行（含 "1 范围" 编号变体）→ 删除。
+       节标题由渲染器统一输出。
     2. 与任一**直接子节点**标题相同的标题行 → 从该行起截断全部剩余内容。
        子章节由系统单独生成，其后的内容必然是子树的重复。
+    3. 其余任何标题行（LLM 自创的子结构，如 "## 3.12.1 时钟约束"）→
+       **降级为段内加粗小标题** `**时钟约束**`：保留内容组织、剥掉硬编码
+       编号、不再参与文档层级。
+    4. 代码块围栏（``` / ~~~）内的行原样保留，不做任何处理。
     """
     if not content:
         return content
@@ -36,14 +43,30 @@ def sanitize_section_content(
 
     out: list[str] = []
     body_started = False
+    in_fence = False
     for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_fence = not in_fence
+            out.append(line)
+            body_started = True
+            continue
+        if in_fence:
+            out.append(line)
+            continue
         heading = _heading_text(line)
         if heading is not None:
             if heading in child_set:
                 break
-            if heading in title_set and not body_started:
+            if heading in title_set:
+                if not body_started:
+                    continue
+                # 正文中段再次出现自身标题（重复标题症状）→ 直接删除
                 continue
-        if line.strip():
+            out.append(f"**{heading}**")
+            body_started = True
+            continue
+        if stripped:
             body_started = True
         out.append(line)
     return "\n".join(out).strip()
