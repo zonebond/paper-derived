@@ -61,6 +61,32 @@ paper-derived llm exec .pd/prompts/feed.md --api-base claude-cli -o .pd/response
   修复重试/占位兜底/审计全套照常生效
 - 对比子代理编排：42 节大模板不再依赖 Agent 逐节派发纪律，也没有子代理超时问题
 
+## 接入任意 Agent CLI（cmd: provider）
+
+其他 Agent（OpenCode / Pi / Codex / Gemini CLI 等）没有专用适配，但只要它有
+headless 模式，就能用 `cmd:` 前缀一行接入——子进程借用该 Agent 已登录的 Provider：
+
+```bash
+paper-derived session run -s $SID --api-base "cmd:opencode run" -O output.md
+paper-derived gen run -t <tid> -i 资料.md --api-base "cmd:gemini -p" -O output.md
+paper-derived llm exec .pd/prompts/x.md --api-base "cmd:codex exec" -o .pd/responses/x.json
+```
+
+约定：命令的 stdout 即响应；prompt 默认从 stdin 送入（system+user 合并，system
+以「[系统指令，严格遵循]」标记）。占位符（可选）：`{model}`（-m 的值）、
+`{prompt_file}` / `{system_file}` / `{user_file}`（写入临时文件后代入路径，
+适配只接受文件入参的 CLI）。
+
+> 注意：cmd: 接入的 agent CLI **不会自动隔离其 Agent 系统提示**（各家旗标不同）——
+> 若该 CLI 支持替换/清空系统提示或禁用工具的参数，写进命令模板里；claude 已有
+> 专用的 `claude-cli` provider（全套隔离），优先用它。
+>
+> 三类 provider 的取舍：HTTP API（最裸、最快）＞ claude-cli（隔离好、有进程开销）
+> ＞ cmd:（万能接入、隔离程度取决于该 CLI 的参数）。Hook 不是调用通道——
+> Claude Code / Pi 的 hook 是事件回调，拿不到 Provider 的推理接口。
+> 有 ANTHROPIC_API_KEY 时也可直连 Anthropic 的 OpenAI 兼容端点：
+> `--api-base https://api.anthropic.com/v1 --api-key $ANTHROPIC_API_KEY -m claude-haiku-4-5`。
+
 ## 分步流水线（需要细粒度控制时）
 
 ```bash

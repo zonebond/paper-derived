@@ -136,7 +136,7 @@ class ClaudeCLIClient:
                 time.sleep(2 ** attempt)
             try:
                 proc = subprocess.run(
-                    cmd, input=user, capture_output=True, text=True,
+                    cmd, input=user, capture_output=True, text=True, errors="replace",
                     timeout=self.timeout, cwd=str(neutral_cwd),
                 )
             except FileNotFoundError as e:
@@ -157,16 +157,104 @@ class ClaudeCLIClient:
         raise last_err  # type: ignore[misc]
 
 
+class CmdLLMClient:
+    """通用 Agent CLI provider：任意有 headless 模式的 agent CLI 一行接入.
+
+    api_base 形如 `cmd:<命令模板>`，借用该 CLI 已登录的 Provider 认证：
+
+        cmd:opencode run                  # OpenCode（prompt 走 stdin）
+        cmd:codex exec                    # Codex CLI
+        cmd:gemini -p                     # Gemini CLI
+        cmd:pi --print                    # Pi Agent（按其 headless 用法填）
+        cmd:mytool --prompt-file {prompt_file}   # 需要文件入参的 CLI
+
+    占位符（都可选）：
+        {model}        → -m 传入的模型名
+        {prompt_file}  → system+user 合并写入的临时文件路径
+        {system_file}  → 仅 system 的临时文件路径
+        {user_file}    → 仅 user 的临时文件路径
+    无 *_file 占位符时，system+user 合并后从 stdin 送入。
+    命令的 stdout 即响应。
+    """
+
+    def __init__(self, cmd_template: str, model: str = "",
+                 timeout: float = 600.0, retries: int = 2):
+        self.cmd_template = cmd_template.strip()
+        self.model = model
+        self.timeout = timeout
+        self.retries = retries
+
+    @staticmethod
+    def _merge(system: str, user: str) -> str:
+        if not system:
+            return user
+        return f"[系统指令，严格遵循]\n{system}\n\n[任务]\n{user}"
+
+    def chat(self, system: str, user: str, max_tokens: int | None = None) -> str:
+        import shlex
+        import subprocess
+        import tempfile
+
+        tmpdir = Path(tempfile.mkdtemp(prefix="pd-cmd-"))
+        files = {
+            "{prompt_file}": tmpdir / "prompt.md",
+            "{system_file}": tmpdir / "system.md",
+            "{user_file}": tmpdir / "user.md",
+        }
+        template = self.cmd_template.replace("{model}", self.model)
+        use_stdin = not any(ph in template for ph in files)
+        if "{prompt_file}" in template:
+            files["{prompt_file}"].write_text(self._merge(system, user), encoding="utf-8")
+        if "{system_file}" in template:
+            files["{system_file}"].write_text(system, encoding="utf-8")
+        if "{user_file}" in template:
+            files["{user_file}"].write_text(user, encoding="utf-8")
+        for ph, path in files.items():
+            template = template.replace(ph, str(path))
+        cmd = shlex.split(template)
+        stdin_text = self._merge(system, user) if use_stdin else None
+
+        last_err: Exception | None = None
+        for attempt in range(self.retries + 1):
+            if attempt > 0:
+                time.sleep(2 ** attempt)
+            try:
+                proc = subprocess.run(
+                    cmd, input=stdin_text, capture_output=True, text=True, errors="replace",
+                    timeout=self.timeout,
+                )
+            except FileNotFoundError as e:
+                raise LLMError(f"找不到命令 `{cmd[0]}`（cmd: provider）") from e
+            except subprocess.TimeoutExpired:
+                last_err = LLMError(f"`{cmd[0]}` 执行超时（{self.timeout}s）")
+                continue
+            if proc.returncode != 0:
+                last_err = LLMError(
+                    f"`{cmd[0]}` 退出码 {proc.returncode}: {proc.stderr.strip()[:300]}")
+                continue
+            out = proc.stdout.strip()
+            if not out:
+                last_err = LLMError(f"`{cmd[0]}` 返回空输出")
+                continue
+            return out
+        raise last_err  # type: ignore[misc]
+
+
 def make_client(api_base: str, model: str, api_key: str = "", temperature: float = 0.2,
                 max_output_tokens: int = 4096, timeout: float = 600.0):
     """按 api_base 选择客户端：
 
-    - "claude-cli" → ClaudeCLIClient（借用本机已登录的 claude CLI，无需 API）
-    - 其他 → LLMClient（OpenAI 兼容 HTTP API）
+    - "claude-cli" → ClaudeCLIClient（本机已登录的 claude CLI，完全隔离的 headless）
+    - "cmd:<命令模板>" → CmdLLMClient（任意 agent CLI 的 headless 模式，借用其认证）
+    - 其他 → LLMClient（OpenAI 兼容 HTTP API；含 Anthropic 的 OpenAI 兼容端点
+      https://api.anthropic.com/v1，需 API key）
     """
-    if api_base.strip().lower() in ("claude-cli", "claude"):
+    base = api_base.strip()
+    if base.lower() in ("claude-cli", "claude"):
         return ClaudeCLIClient(model=model, temperature=temperature,
                                max_output_tokens=max_output_tokens, timeout=timeout)
+    if base.lower().startswith("cmd:"):
+        return CmdLLMClient(base[4:], model=model, timeout=timeout)
     return LLMClient(api_base=api_base, model=model, api_key=api_key,
                      temperature=temperature, max_output_tokens=max_output_tokens,
                      timeout=timeout)

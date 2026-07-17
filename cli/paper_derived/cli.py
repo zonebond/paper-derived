@@ -40,7 +40,7 @@ def version_cmd():
 
     info = get_version_info()
     info["compact_prompts"] = (PROMPTS_DIR / "compact").is_dir()
-    info["capabilities"] = ["out-text-prompt", "parse-output-file", "session-run", "llm-exec", "compact-prompts", "doc-export", "doc-sanitize", "pd-workdir", "template-register-auto", "gen-run", "guidance-slices", "placeholder-fallback", "structure-audit", "claude-cli-provider"]
+    info["capabilities"] = ["out-text-prompt", "parse-output-file", "session-run", "llm-exec", "compact-prompts", "doc-export", "doc-sanitize", "pd-workdir", "template-register-auto", "gen-run", "guidance-slices", "placeholder-fallback", "structure-audit", "claude-cli-provider", "cmd-provider"]
     click.echo(json.dumps(info, ensure_ascii=False))
 
 
