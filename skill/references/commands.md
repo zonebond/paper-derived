@@ -28,6 +28,14 @@ paper-derived version      # JSON：版本 + 构建 commit/时间 + 能力清单
 Skill 自身版本见 SKILL.md 顶部版本行（install.sh 安装时盖 commit + 日期戳）；
 两边版本号不一致 → 二进制与 skill 文档不同步，重新运行 install.sh。
 
+## 交互向导（零 Agent、零命令记忆）
+
+```bash
+paper-derived wizard
+```
+
+一步步引导：Provider 配置（不假设本机有任何模型服务）→ 连通测试 → 选/注册模板 → 选资料 → 生成交付。全程人类可读进度。小模型 Agent 体验差时的兜底形态。
+
 ## 模板命令
 
 ### `paper-derived template register`
@@ -147,6 +155,7 @@ paper-derived gen run -t <template-id> -i <原始资料> [-i ...] --api-base <ur
 ```
 
 - `--placeholders`（默认开）：缺输入/生成失败的节由引擎直接写占位说明（含该节要求原文），保证结构绝不缺失；`--no-placeholders` 改为停下等人
+- `--progress`：人类可读进度（`[3/42] ✓ 可靠性要求`）；默认输出 JSON 事件行（Agent/脚本用）。`session run` / `register-auto` 同样支持
 - 结束时 `run_finished` 事件附带确定性结构审计 `audit`（missing/empty/complete）
 
 ### `paper-derived gen validate`

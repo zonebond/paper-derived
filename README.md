@@ -130,6 +130,7 @@ Or download a pre-built binary from Releases.
 ```bash
 cd paper-derived/skill
 ./install.sh --adapter claude                        # Claude Code (user-level)
+./install.sh --adapter claude --lite                 # Lite: front-desk skill for small-model agents
 ./install.sh --adapter claude --project-dir ./proj   # Claude Code (project-level)
 ./install.sh --adapter copilot --project-dir ./proj  # GitHub Copilot
 ./install.sh --adapter opencode                       # OpenCode

@@ -40,7 +40,7 @@ def version_cmd():
 
     info = get_version_info()
     info["compact_prompts"] = (PROMPTS_DIR / "compact").is_dir()
-    info["capabilities"] = ["out-text-prompt", "parse-output-file", "session-run", "llm-exec", "compact-prompts", "doc-export", "doc-sanitize", "pd-workdir", "template-register-auto", "gen-run", "guidance-slices", "placeholder-fallback", "structure-audit", "claude-cli-provider", "cmd-provider", "llm-config"]
+    info["capabilities"] = ["out-text-prompt", "parse-output-file", "session-run", "llm-exec", "compact-prompts", "doc-export", "doc-sanitize", "pd-workdir", "template-register-auto", "gen-run", "guidance-slices", "placeholder-fallback", "structure-audit", "claude-cli-provider", "cmd-provider", "llm-config", "progress-output", "wizard"]
     click.echo(json.dumps(info, ensure_ascii=False))
 
 
@@ -168,6 +168,87 @@ def _make_client(api_base, model, api_key, temperature, max_output, timeout):
         raise click.UsageError(str(e))
 
 
+def _human_event(ev: dict) -> str | None:
+    """把直驱事件转成人类可读行；返回 None 表示该事件不值得打扰用户."""
+    t = ev.get("event", "")
+    if t == "tree_scanned":
+        tops = "、".join(ev.get("top_level", [])[:8])
+        return f"◆ 结构扫描：{ev.get('sections')} 节（{tops}…）"
+    if t == "module_generated":
+        return f"◆ 模板模块生成：{ev.get('module')}（{ev.get('chars')} 字）"
+    if t == "template_registered":
+        return f"✔ 模板已注册：{ev.get('template_id')}（{ev.get('sections')} 节，结构确定性扫描）"
+    if t == "chunk_registered":
+        return f"  · 分块抽取 {ev.get('chunk')}：{ev.get('file')}"
+    if t == "asset_registered":
+        return f"✔ 资料已注册：{ev.get('file')}（{ev.get('entities')} 实体）"
+    if t == "asset_skipped":
+        return f"↷ 资料已注册过，跳过：{ev.get('file')}"
+    if t == "session_created":
+        return f"✔ 会话创建：{ev.get('session_id')}（预算 {ev.get('budget')} tokens）"
+    if t == "session_resumed":
+        return f"↻ 会话续传：{ev.get('session_id')}（阶段 {ev.get('phase')}）"
+    if t == "fed":
+        gaps = ev.get("data_gaps") or []
+        tail = f"；数据缺口 {len(gaps)} 处" if gaps else ""
+        return f"✔ 资料已喂入上下文库（{ev.get('entities')} 实体）{tail}"
+    if t == "budget_adjusted":
+        return f"◆ 预算按窗口收缩：{ev.get('old_budget')} → {ev.get('new_budget')}"
+    if t == "stale_reset":
+        return f"↻ 重置上次中断残留：{len(ev.get('sections', []))} 节"
+    if t == "section_done":
+        note = ""
+        if ev.get("attempts", 1) > 1:
+            note += f"（第 {ev['attempts']} 次尝试成功）"
+        if ev.get("section_status") == "placeholder":
+            note += "［占位］"
+        return f"[{ev.get('progress', '')}] ✓ {ev.get('section')} {note}".rstrip()
+    if t in ("summarized",):
+        return None  # 噪音，略过
+    if t == "parse_retry":
+        who = ev.get("section") or ev.get("step") or ""
+        return f"  ⟳ {who} 第 {ev.get('attempt')} 次输出无法解析，自动修正重试…"
+    if t == "llm_error":
+        who = ev.get("section") or ev.get("step") or ""
+        return f"  ✗ {who} 调用失败（第 {ev.get('attempt')} 次）：{str(ev.get('error', ''))[:120]}"
+    if t == "summarize_skipped":
+        return f"  ⚠ {ev.get('section')} 摘要失败（不影响流程）"
+    if t == "section_failed":
+        return f"  ✗ {ev.get('section')} 生成失败（{ev.get('attempts')} 次重试耗尽）"
+    if t == "placeholder_filled":
+        return f"  ⧉ {ev.get('section')} → 引擎占位（{ev.get('reason')}）"
+    if t == "needs_input":
+        return f"⏸ 缺输入停下：{len(ev.get('pending_sections', []))} 节待补料"
+    if t == "run_finished":
+        audit = ev.get("audit", {})
+        ok = "审计通过 ✅" if audit.get("complete") else             f"审计未过 ❌ 缺失{len(audit.get('missing', []))}/空{len(audit.get('empty', []))}"
+        failed = ev.get("failed") or []
+        tail = f"；失败节：{', '.join(failed)}" if failed else ""
+        return f"━━ 完成 {ev.get('progress')}（{ev.get('status')}）· {ok}{tail}"
+    if t == "assembled":
+        return f"📄 已组装：{ev.get('output', ev.get('hint', ''))}"
+    if t == "delivered":
+        return f"📄 交付 → {ev.get('output')}"
+    return json.dumps(ev, ensure_ascii=False)  # 未知事件兜底仍可见
+
+
+def _make_on_event(progress: bool):
+    """事件输出器：--progress 人类可读；默认 JSON 行（供 Agent/脚本消费）."""
+    def on_event(ev: dict) -> None:
+        if progress:
+            line = _human_event(ev)
+            if line is not None:
+                click.echo(line)
+        else:
+            click.echo(json.dumps(ev, ensure_ascii=False))
+    return on_event
+
+
+def _progress_option(f):
+    return click.option("--progress", is_flag=True, default=False,
+                        help="人类可读进度输出（默认输出 JSON 事件行）")(f)
+
+
 # ── Template commands ──────────────────────────────────────────
 
 
@@ -255,8 +336,9 @@ def template_register(sample, name, description, parse, prompt_file):
 @_llm_client_options
 @click.option("--window", default=0, type=int, help="Provider 上下文窗口（token），控制样例节选长度")
 @click.option("--compact", is_flag=True, default=False, help="使用精简版内置 prompt")
+@_progress_option
 def template_register_auto(sample, name, description, api_base, model, api_key,
-                           temperature, max_output, timeout, window, compact):
+                           temperature, max_output, timeout, window, compact, progress):
     """小模型友好的模板注册（直驱）：结构确定性扫描，LLM 只写三段小文本。
 
     章节树由引擎从样例的编号/markdown 标题确定性构建（不让 LLM 输出大 JSON），
@@ -271,9 +353,7 @@ def template_register_auto(sample, name, description, api_base, model, api_key,
 
     sample_text, _, _ = _read_input_file(sample)
     client = _make_client(api_base, model, api_key, temperature, max_output, timeout)
-
-    def on_event(ev: dict) -> None:
-        click.echo(json.dumps(ev, ensure_ascii=False))
+    on_event = _make_on_event(progress)
 
     try:
         tpl = register_template_auto(sample_text, name, description, client,
@@ -721,9 +801,10 @@ def doc_export(doc_file, output, output_format):
               help="缺输入/生成失败的节由引擎直接写占位说明（默认开——保证结构绝不缺失）")
 @click.option("--output", "-O", default="", help="交付文件路径（如 output.md / output.docx）")
 @click.option("--format", "-f", "output_format", default=None, help="输出格式: md|docx|pdf|json")
+@_progress_option
 def gen_run(template, input_files, api_base, model, api_key, temperature, max_output,
             timeout, window, compact, workdir, max_sections, no_summarize,
-            max_attempts, placeholders, output, output_format):
+            max_attempts, placeholders, output, output_format, progress):
     """一条龙直驱生成：原始资料 → 注册（自动分块）→ feed → 逐节生成 → 组装交付。
 
     全程引擎调 Provider，零 Agent 编排；~30B 级模型可稳定完成。
@@ -737,9 +818,7 @@ def gen_run(template, input_files, api_base, model, api_key, temperature, max_ou
         set_compact(True)
 
     client = _make_client(api_base, model, api_key, temperature, max_output, timeout)
-
-    def on_event(ev: dict) -> None:
-        click.echo(json.dumps(ev, ensure_ascii=False))
+    on_event = _make_on_event(progress)
 
     try:
         summary = run_pipeline(
@@ -984,9 +1063,10 @@ def session_search_cmd(session_id, query, focus, budget):
               help="全部完成后自动组装（默认开）")
 @click.option("--output", "-O", default=None, help="组装输出文件路径（默认用 session init 时的配置）")
 @click.option("--format", "-f", "output_format", default=None, help="输出格式: md|docx|pdf|json")
+@_progress_option
 def session_run_cmd(session_id, api_base, model, api_key, temperature, max_output, timeout,
                     window, max_sections, do_summarize, max_attempts, compact,
-                    placeholders, do_assemble, output, output_format):
+                    placeholders, do_assemble, output, output_format, progress):
     """直驱模式：引擎自己调本地/离线 LLM，跑完生成循环。无需 Agent 编排。
 
     每次 LLM 调用都是无状态单 prompt；中断后重跑本命令自动续传。
@@ -1001,9 +1081,7 @@ def session_run_cmd(session_id, api_base, model, api_key, temperature, max_outpu
         set_compact(True)
 
     client = _make_client(api_base, model, api_key, temperature, max_output, timeout)
-
-    def on_event(ev: dict) -> None:
-        click.echo(json.dumps(ev, ensure_ascii=False))
+    on_event = _make_on_event(progress)
 
     summary = run_session(
         session_id, client,
@@ -1019,12 +1097,12 @@ def session_run_cmd(session_id, api_base, model, api_key, temperature, max_outpu
         out_path = output or sess.output_path
         if out_path:
             written = write_document(doc, out_path, fmt=output_format or sess.output_format or None)
-            click.echo(json.dumps({"event": "assembled", "output": str(written)}, ensure_ascii=False))
+            on_event({"event": "assembled", "output": str(written)})
         else:
-            click.echo(json.dumps({
+            on_event({
                 "event": "assembled",
                 "hint": f"未指定输出路径。导出: session assemble -s {session_id} -O <file>",
-            }, ensure_ascii=False))
+            })
 
     if summary["status"] in ("stuck",) or summary["failed"]:
         raise SystemExit(1)
@@ -1050,6 +1128,93 @@ def session_delete_cmd(session_id):
 
     delete_session(session_id)
     click.echo(f"会话 '{session_id}' 已删除")
+
+
+@main.command("wizard")
+def wizard_cmd():
+    """交互式向导：配置 Provider → 选/注册模板 → 选资料 → 生成交付。零 Agent、零命令记忆。"""
+    from paper_derived.llm import load_llm_config, save_llm_config, LLMError
+
+    click.echo("═══ paper-derived 向导 ═══\n")
+
+    # ── 1. Provider ──
+    cfg = load_llm_config()
+    if cfg.get("api_base"):
+        click.echo(f"Provider：{cfg['api_base']}  模型：{cfg.get('model') or '(默认)'}")
+        if not click.confirm("继续使用该配置？", default=True):
+            cfg = {}
+    if not cfg.get("api_base"):
+        click.echo("请配置 LLM Provider（不假设本机装有任何模型服务）：")
+        click.echo("  · 在 Claude Code 等环境内可直接用 claude-cli（零配置）")
+        click.echo("  · 否则填你的远程推理服务地址（OpenAI 兼容，如 https://llm.example.com/v1）")
+        api_base = click.prompt("端点", default="claude-cli")
+        model = click.prompt("模型名（回车用默认）", default="", show_default=False)
+        api_key = click.prompt("API Key（不需要则回车）", default="", show_default=False)
+        window = click.prompt("Provider 上下文窗口 tokens", default=32768, type=int)
+        cfg = {"api_base": api_base, "model": model, "api_key": api_key, "window": window}
+        save_llm_config(cfg)
+    client = _make_client(cfg["api_base"], cfg.get("model", ""), cfg.get("api_key", ""),
+                          0.2, 4096, 600.0)
+    if click.confirm("先做连通性测试？", default=True):
+        try:
+            client.chat("", "只回复两个字符：OK", max_tokens=8)
+            click.echo("✔ 连通正常\n")
+        except LLMError as e:
+            click.echo(f"✗ 连不上 Provider：{str(e)[:300]}")
+            click.echo("请检查配置后重新运行 wizard（paper-derived llm config 可改配置）。")
+            raise SystemExit(1)
+
+    window = int(cfg.get("window") or 0)
+    on_event = _make_on_event(progress=True)
+
+    # ── 2. 模板 ──
+    from paper_derived.engine.template import list_all
+    templates = list_all()
+    tid = ""
+    if templates:
+        click.echo("已注册模板：")
+        for i, t in enumerate(templates, 1):
+            click.echo(f"  {i}. {t['id']}（{t.get('name','')}，{len(t.get('section_ids', []))} 节）")
+        choice = click.prompt("选择模板编号，或输入 0 注册新模板", default=1, type=int)
+        if 1 <= choice <= len(templates):
+            tid = templates[choice - 1]["id"]
+    if not tid:
+        from paper_derived.runner import register_template_auto, PipelineError
+        sample = click.prompt("样例模板文档路径", type=click.Path(exists=True))
+        name = click.prompt("模板名称")
+        sample_text, _, _ = _read_input_file(sample)
+        try:
+            tpl = register_template_auto(sample_text, name, "", client,
+                                         window=window, on_event=on_event)
+        except PipelineError as e:
+            click.echo(f"✗ 注册失败：{e}")
+            raise SystemExit(1)
+        tid = tpl.id
+        click.echo("")
+
+    # ── 3. 输入资料 ──
+    while True:
+        raw = click.prompt("输入资料路径（多个用空格分隔）")
+        paths = [x for x in raw.split() if x]
+        missing = [x for x in paths if not Path(x).is_file()]
+        if not missing:
+            break
+        click.echo(f"找不到文件：{', '.join(missing)}，请重新输入")
+
+    # ── 4. 输出与执行 ──
+    output = click.prompt("交付文件名", default="output.md")
+    click.echo("")
+    from paper_derived.runner import run_pipeline, PipelineError
+    try:
+        summary = run_pipeline(tid, paths, client, window=window,
+                               output=output, on_event=on_event)
+    except PipelineError as e:
+        click.echo(f"✗ 生成失败：{e}")
+        raise SystemExit(1)
+    if summary.get("output"):
+        click.echo(f"\n完成。交付文件：{summary['output']}；过程文件在 .pd/（确认后可删除）。")
+    if summary["status"] != "ready_to_assemble":
+        raise SystemExit(1)
 
 
 # ── LLM 直驱命令 ────────────────────────────────────────────────

@@ -6,11 +6,13 @@ set -euo pipefail
 
 ADAPTER=""
 PROJECT_DIR=""
+LITE=0
 
 while [[ $# -gt 0 ]]; do
   case $1 in
     --adapter) ADAPTER="$2"; shift 2 ;;
     --project-dir) PROJECT_DIR="$2"; shift 2 ;;
+    --lite) LITE=1; shift ;;
     *) echo "未知参数: $1"; exit 1 ;;
   esac
 done
@@ -46,22 +48,28 @@ find_binary() {
 install_to() {
   local dest="$1"
   mkdir -p "$dest"
-  cp "$SCRIPT_DIR/SKILL.md" "$dest/SKILL.md"
+  if [[ "$LITE" == "1" ]]; then
+    # Lite：小模型 Agent 前台版——只装精简 SKILL + 二进制，不装编排工作流
+    cp "$SCRIPT_DIR/SKILL-lite.md" "$dest/SKILL.md"
+    echo "模式: lite（前台版，Agent 只发直驱命令）"
+  else
+    cp "$SCRIPT_DIR/SKILL.md" "$dest/SKILL.md"
+  fi
 
   # 盖安装戳：commit + 安装时间，写进 SKILL.md 的版本行（/slash 触发即可见）
   local commit stamp
   commit="$(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
   stamp="（commit ${commit}，安装于 $(date +%Y-%m-%d)）"
   sed -i.bak "s|<!-- BUILD_INFO -->|${stamp}|" "$dest/SKILL.md" && rm -f "$dest/SKILL.md.bak"
-  if [[ -d "$SCRIPT_DIR/workflows" ]]; then
+  if [[ "$LITE" != "1" ]] && [[ -d "$SCRIPT_DIR/workflows" ]]; then
     mkdir -p "$dest/workflows"
     cp -r "$SCRIPT_DIR/workflows/"* "$dest/workflows/"
   fi
-  if [[ -d "$SCRIPT_DIR/references" ]]; then
+  if [[ "$LITE" != "1" ]] && [[ -d "$SCRIPT_DIR/references" ]]; then
     mkdir -p "$dest/references"
     cp -r "$SCRIPT_DIR/references/"* "$dest/references/"
   fi
-  if [[ -d "$SCRIPT_DIR/examples" ]]; then
+  if [[ "$LITE" != "1" ]] && [[ -d "$SCRIPT_DIR/examples" ]]; then
     mkdir -p "$dest/examples"
     cp -r "$SCRIPT_DIR/examples/"* "$dest/examples/"
   fi

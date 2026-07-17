@@ -84,12 +84,11 @@ PROVIDER_GUIDE = """\
 
   3) 命令行参数：--api-base <端点> -m <模型名>
 
-端点示例（生产环境通常是远程服务，不是本机）：
-  https://llm.example.com/v1          远程 vLLM / 推理网关（OpenAI 兼容）
-  http://10.0.0.8:11434/v1            局域网 Ollama 主机
+端点选项（不要假设本机装有 Ollama 或任何模型服务——先问用户有什么）：
+  claude-cli                          Claude Code 环境内零配置（借用已登录的 claude CLI）
+  https://llm.example.com/v1          用户提供的远程推理服务（vLLM/网关/Ollama 主机，OpenAI 兼容）
   https://api.anthropic.com/v1        Anthropic（需 API key）
-  claude-cli                          本机已登录的 claude CLI（无需 API）
-  cmd:<agent命令>                     任意 agent CLI 的 headless 模式"""
+  cmd:<agent命令>                     其他 agent CLI 的 headless 模式（OpenCode/Pi/…）"""
 
 
 def load_llm_config() -> dict:
