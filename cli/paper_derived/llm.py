@@ -71,6 +71,47 @@ def read_prompt_file(path: str | Path) -> tuple[str, str]:
     return system.strip(), user.strip()
 
 
+LLM_CONFIG_PATH = Path.home() / ".paper-derived" / "llm.json"
+
+PROVIDER_GUIDE = """\
+未配置 LLM Provider。直驱模式需要一个可用的 LLM 端点，请三选一：
+
+  1) 持久化配置（推荐，一次配置全部直驱命令生效）：
+     paper-derived llm config --api-base <端点> -m <模型名> [--api-key <key>] [--window <tokens>]
+     然后 paper-derived llm test 验证连通。
+
+  2) 环境变量：PAPER_DERIVED_API_BASE / PAPER_DERIVED_MODEL / PAPER_DERIVED_API_KEY
+
+  3) 命令行参数：--api-base <端点> -m <模型名>
+
+端点示例（生产环境通常是远程服务，不是本机）：
+  https://llm.example.com/v1          远程 vLLM / 推理网关（OpenAI 兼容）
+  http://10.0.0.8:11434/v1            局域网 Ollama 主机
+  https://api.anthropic.com/v1        Anthropic（需 API key）
+  claude-cli                          本机已登录的 claude CLI（无需 API）
+  cmd:<agent命令>                     任意 agent CLI 的 headless 模式"""
+
+
+def load_llm_config() -> dict:
+    """读取持久化的 provider 配置（不存在返回空 dict）."""
+    try:
+        return json.loads(LLM_CONFIG_PATH.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def save_llm_config(cfg: dict) -> None:
+    LLM_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    LLM_CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+class ProviderNotConfigured(RuntimeError):
+    """未配置 LLM Provider（附引导文案）。"""
+
+    def __init__(self):
+        super().__init__(PROVIDER_GUIDE)
+
+
 class LLMError(RuntimeError):
     """LLM 调用失败（重试耗尽后抛出）。"""
 
@@ -249,6 +290,13 @@ def make_client(api_base: str, model: str, api_key: str = "", temperature: float
     - 其他 → LLMClient（OpenAI 兼容 HTTP API；含 Anthropic 的 OpenAI 兼容端点
       https://api.anthropic.com/v1，需 API key）
     """
+    cfg = load_llm_config()
+    api_base = api_base or cfg.get("api_base", "")
+    model = model or cfg.get("model", "")
+    api_key = api_key or cfg.get("api_key", "")
+    if not api_base:
+        raise ProviderNotConfigured()
+
     base = api_base.strip()
     if base.lower() in ("claude-cli", "claude"):
         return ClaudeCLIClient(model=model, temperature=temperature,

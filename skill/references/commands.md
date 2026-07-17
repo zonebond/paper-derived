@@ -294,6 +294,24 @@ paper-derived session run -s <session-id> --api-base <url> -m <model> \
 
 详见 `references/offline-mode.md`。
 
+### `paper-derived llm config`
+
+查看/保存 LLM Provider 持久化配置（`~/.paper-derived/llm.json`）。所有直驱命令未显式给 `--api-base` 时自动使用。
+
+```bash
+paper-derived llm config                                          # 查看（未配置 → 引导 + 退出码 2）
+paper-derived llm config --api-base <端点> -m <模型> [--api-key <key>] [--window N]
+paper-derived llm config --clear
+```
+
+### `paper-derived llm test`
+
+连通性测试：发一次最小调用，验证端点/模型/认证。
+
+```bash
+paper-derived llm test    # → {"status":"ok","latency_s":...} 或 {"status":"failed","error":...}
+```
+
 ### `paper-derived llm exec`
 
 执行任意 `--out` 落盘的 prompt 文件（离线环境替代「子代理执行」）。

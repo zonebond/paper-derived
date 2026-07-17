@@ -40,7 +40,7 @@ def version_cmd():
 
     info = get_version_info()
     info["compact_prompts"] = (PROMPTS_DIR / "compact").is_dir()
-    info["capabilities"] = ["out-text-prompt", "parse-output-file", "session-run", "llm-exec", "compact-prompts", "doc-export", "doc-sanitize", "pd-workdir", "template-register-auto", "gen-run", "guidance-slices", "placeholder-fallback", "structure-audit", "claude-cli-provider", "cmd-provider"]
+    info["capabilities"] = ["out-text-prompt", "parse-output-file", "session-run", "llm-exec", "compact-prompts", "doc-export", "doc-sanitize", "pd-workdir", "template-register-auto", "gen-run", "guidance-slices", "placeholder-fallback", "structure-audit", "claude-cli-provider", "cmd-provider", "llm-config"]
     click.echo(json.dumps(info, ensure_ascii=False))
 
 
@@ -143,9 +143,9 @@ def _output_asset(result, output: str | None, asset_name: str, slim: bool) -> No
 
 def _llm_client_options(f):
     """直驱模式的 provider 连接选项（session run / llm exec 共用）."""
-    f = click.option("--api-base", required=True, envvar="PAPER_DERIVED_API_BASE",
-                     help="OpenAI 兼容 API 地址，如 http://localhost:11434/v1（Ollama）；"
-                          "或 claude-cli（借用本机已登录的 claude CLI，无需 API）")(f)
+    f = click.option("--api-base", default="", envvar="PAPER_DERIVED_API_BASE",
+                     help="LLM 端点：OpenAI 兼容地址（生产环境通常是远程服务）、claude-cli、"
+                          "或 cmd:<agent命令>。未给出时用 `llm config` 的持久化配置")(f)
     f = click.option("--model", "-m", default="", envvar="PAPER_DERIVED_MODEL",
                      help="模型名，如 qwen2.5:14b；claude-cli 时可用 sonnet/haiku/opus（留空用默认）")(f)
     f = click.option("--api-key", default="", envvar="PAPER_DERIVED_API_KEY",
@@ -158,11 +158,14 @@ def _llm_client_options(f):
 
 
 def _make_client(api_base, model, api_key, temperature, max_output, timeout):
-    from paper_derived.llm import make_client
-    return make_client(
-        api_base, model, api_key=api_key,
-        temperature=temperature, max_output_tokens=max_output, timeout=timeout,
-    )
+    from paper_derived.llm import make_client, ProviderNotConfigured
+    try:
+        return make_client(
+            api_base, model, api_key=api_key,
+            temperature=temperature, max_output_tokens=max_output, timeout=timeout,
+        )
+    except ProviderNotConfigured as e:
+        raise click.UsageError(str(e))
 
 
 # ── Template commands ──────────────────────────────────────────
@@ -1055,6 +1058,66 @@ def session_delete_cmd(session_id):
 @main.group(name="llm")
 def llm_group():
     """直驱模式：本地/离线 OpenAI 兼容 Provider 直接执行 prompt."""
+
+
+@llm_group.command("config")
+@click.option("--api-base", default=None, help="LLM 端点（远程 OpenAI 兼容地址 / claude-cli / cmd:…）")
+@click.option("--model", "-m", default=None, help="模型名（须与 provider 的模型清单一致，如 ollama list 输出）")
+@click.option("--api-key", default=None, help="API Key（不需要则不填）")
+@click.option("--window", default=None, type=int, help="Provider 上下文窗口（tokens），直驱命令未指定 --window 时的默认值")
+@click.option("--clear", is_flag=True, default=False, help="清除已保存的配置")
+def llm_config_cmd(api_base, model, api_key, window, clear):
+    """查看/保存 LLM Provider 持久化配置（~/.paper-derived/llm.json）。
+
+    不带参数 = 查看当前配置；带参数 = 增量更新并保存。
+    保存后所有直驱命令（session run / gen run / llm exec / register-auto）
+    未显式给 --api-base 时自动使用该配置。
+    """
+    from paper_derived.llm import load_llm_config, save_llm_config, LLM_CONFIG_PATH, PROVIDER_GUIDE
+
+    if clear:
+        LLM_CONFIG_PATH.unlink(missing_ok=True)
+        click.echo(json.dumps({"status": "cleared"}, ensure_ascii=False))
+        return
+
+    cfg = load_llm_config()
+    updates = {k: v for k, v in
+               [("api_base", api_base), ("model", model), ("api_key", api_key), ("window", window)]
+               if v is not None}
+    if updates:
+        cfg.update(updates)
+        save_llm_config(cfg)
+
+    shown = dict(cfg)
+    if shown.get("api_key"):
+        shown["api_key"] = shown["api_key"][:4] + "****"
+    if not cfg.get("api_base"):
+        click.echo(PROVIDER_GUIDE)
+        raise SystemExit(2)
+    click.echo(json.dumps({"status": "saved" if updates else "current",
+                           "config_file": str(LLM_CONFIG_PATH), **shown}, ensure_ascii=False))
+
+
+@llm_group.command("test")
+@_llm_client_options
+def llm_test_cmd(api_base, model, api_key, temperature, max_output, timeout):
+    """连通性测试：向 Provider 发一次最小调用，验证端点/模型/认证是否可用。"""
+    import time as _time
+    from paper_derived.llm import LLMError
+
+    client = _make_client(api_base, model, api_key, temperature, max_output, timeout)
+    t0 = _time.time()
+    try:
+        reply = client.chat("", "只回复两个字符：OK", max_tokens=8)
+    except LLMError as e:
+        click.echo(json.dumps({"status": "failed", "error": str(e)[:400]}, ensure_ascii=False))
+        raise SystemExit(1)
+    click.echo(json.dumps({
+        "status": "ok",
+        "latency_s": round(_time.time() - t0, 2),
+        "reply_head": reply[:40],
+        "client": type(client).__name__,
+    }, ensure_ascii=False))
 
 
 @llm_group.command("exec")

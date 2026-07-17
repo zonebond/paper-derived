@@ -88,8 +88,26 @@ $PAPER_DERIVED_BIN <cmd> <args> --parse .pd/responses/<key>.json # ③ 主 Agent
 3. **注册资料超大** → `--chunk-size` 分块，每块一个子代理。
 4. 重派时在子代理指令中注明：prompt 文件较大，分段 Read（offset/limit）读完整再执行。
 
-**绝对禁止**向用户索要 LLM API 地址——在 Claude Code 环境内直驱**不需要任何 API**：
-`--api-base claude-cli` 让引擎通过本机已登录的 `claude` CLI（headless 模式）直接调用 LLM。
+## 直驱模式的 Provider 配置（需要用户提供时，明确收集）
+
+任何直驱命令（`session run` / `gen run` / `llm exec` / `register-auto`）运行前，先查配置：
+
+```bash
+$PAPER_DERIVED_BIN llm config        # 已配置 → 显示端点/模型；未配置 → 输出引导并退出码 2
+```
+
+**未配置且需要外部 Provider 时，必须向用户明确收集**（这是只有用户知道的信息，
+生产环境的 LLM 通常是远程服务而非本机）：问清 ①端点地址（远程 vLLM/推理网关/
+局域网 Ollama 的 OpenAI 兼容地址）②模型名（须与 provider 模型清单一致）③是否需要
+API key ④上下文窗口大小。拿到后持久化并验证：
+
+```bash
+$PAPER_DERIVED_BIN llm config --api-base https://llm.example.com/v1 -m qwen3.6:35b --window 32768
+$PAPER_DERIVED_BIN llm test          # 连通性验证，失败时把 error 报给用户
+```
+
+在 Claude Code 环境内若用户没有外部 Provider，可提议 `--api-base claude-cli`
+（借用本机已登录的 claude CLI，零配置）——但这是选项之一，不是替代询问的捷径；
 
 拆小重派 2 轮仍失败、或任务量大（如 42 节模板逐节生成）想省编排开销时，
 可**征得用户同意后**切换直驱（无需用户提供任何配置）：
